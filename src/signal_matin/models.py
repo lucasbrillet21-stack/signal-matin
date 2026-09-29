@@ -138,6 +138,34 @@ class QuoteBlock(Modele):
     author: str = Field(default="", max_length=120)
 
 
+class ThoughtOfDay(Modele):
+    text: str = Field(min_length=1, max_length=420)
+    author: str = Field(min_length=1, max_length=120)
+    work: str = Field(min_length=1, max_length=160)
+    reference: str = Field(min_length=1, max_length=160)
+    source_url: HttpUrl
+    explanation: str = Field(min_length=1, max_length=2000)
+
+
+class ArticleParagraph(Modele):
+    kind: Literal["facts", "context", "mechanisms", "analysis", "consequences", "limits"]
+    text: str = Field(min_length=1, max_length=1800)
+    source_ids: list[int] = Field(default_factory=list, max_length=8)
+
+
+class FeatureArticle(Modele):
+    category: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=240)
+    tier: Literal["dossier", "article", "lecture"]
+    paragraphs: list[ArticleParagraph] = Field(default_factory=list, max_length=18)
+    sources: list[SourceRef] = Field(default_factory=list, max_length=8)
+    shortfall: bool = False
+    attribution: str = Field(default="", max_length=240)
+
+    def word_count(self) -> int:
+        return sum(len(paragraph.text.split()) for paragraph in self.paragraphs)
+
+
 class WordOfTheDay(Modele):
     word: str = Field(min_length=1, max_length=80)
     definition: str = Field(min_length=1, max_length=420)
@@ -212,6 +240,11 @@ class MorningEdition(Modele):
     personal: PersonalBlock = Field(default_factory=PersonalBlock)
     extras: Extras = Field(default_factory=Extras)
     learning: LearningPage = Field(default_factory=LearningPage)
+    personal_journal: bool = False
+    thought: ThoughtOfDay | None = None
+    personal_articles: list[NewsItem] = Field(default_factory=list, max_length=40)
+    expected_categories: list[str] = Field(default_factory=list, max_length=24)
+    personal_features: list[FeatureArticle] = Field(default_factory=list, max_length=3)
 
     @field_validator("generated_at")
     @classmethod

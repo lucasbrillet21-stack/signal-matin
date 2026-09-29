@@ -39,6 +39,12 @@
   }
 
   function continuationTitle(source) {
+    if (source.classList.contains("page-personal")) {
+      const title = document.createElement("header");
+      title.className = "personal-continuation-label";
+      title.textContent = "La lecture continue";
+      return title;
+    }
     const title = document.createElement("header");
     title.className = "section-header adaptive-section-header";
     title.innerHTML = `<span class="section-eyebrow">La lecture continue</span><h2>${source.dataset.label || "Suite"}</h2>`;
@@ -69,7 +75,8 @@
   function firstMovedNode(destination) {
     const content = contentOf(destination);
     return [...content.children].find(
-      (node) => !node.classList.contains("adaptive-section-header")
+      (node) => !node.classList.contains("adaptive-section-header") &&
+        !node.classList.contains("personal-continuation-label")
     ) || null;
   }
 
@@ -82,7 +89,8 @@
     const content = contentOf(source);
     return [...content.children].filter(
       (node) => !node.classList.contains("section-header") &&
-        !node.classList.contains("adaptive-section-header")
+        !node.classList.contains("adaptive-section-header") &&
+        !node.classList.contains("personal-continuation-label")
     );
   }
 

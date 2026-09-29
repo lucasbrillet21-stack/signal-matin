@@ -16,6 +16,8 @@ from .models import (
     Recommendation, SourceRef,
 )
 from .normalizer import normaliser_edition
+from .thought import thought_for_date
+from .editorial import categories_for_date, local_date, write_features
 
 
 def _enabled(config: dict, name: str, default: bool = True) -> bool:
@@ -62,6 +64,8 @@ def build_live(
     root: Path = ROOT,
 ) -> MorningEdition:
     now = now or dt.datetime.now().astimezone()
+    if setting(config, "profile", "") == "personal":
+        return _build_personal(config, now, mode)
     statuses: list[DataSourceStatus] = []
 
     if _enabled(config, "weather"):
@@ -160,3 +164,44 @@ def build_live(
                   else LearningPage()),
     )
     return normaliser_edition(edition, mode=mode)
+
+
+def _build_personal(config: dict, now: dt.datetime, mode: str) -> MorningEdition:
+    date = local_date(config, now)
+    selected = categories_for_date(config, date)
+    feeds = [feed for feed in (setting(config, "news.feeds", []) or [])
+             if isinstance(feed, dict) and feed.get("category") in selected]
+    items, status = collect_rss(
+        feeds, now,
+        limit=min(30, int(setting(config, "news.limit", 18) or 18)),
+        max_age_hours=int(setting(config, "news.max_age_hours", 48) or 48),
+        status_name="Actualités vérifiables", require_date=True,
+    )
+    music_keywords = [str(word).casefold() for word in
+                      (setting(config, "interests.music_keywords", []) or [])]
+    music_positions = [index for index, item in enumerate(items)
+                       if item.category.casefold() == "musique"]
+    music_items = sorted(
+        (items[index] for index in music_positions),
+        key=lambda item: any(word in f"{item.title} {item.summary}".casefold()
+                             for word in music_keywords), reverse=True,
+    )
+    for index, item in zip(music_positions, music_items):
+        items[index] = item
+    features = write_features(config, date, selected, items)
+    edition = MorningEdition(
+        generated_at=now, demo=False, personal_journal=True,
+        edition=EditionMeta(
+            date=date,
+            number=max(1, (date - dt.date(2026, 1, 1)).days + 1),
+            title=str(setting(config, "paper.title", "Signal Matin")),
+            subtitle=str(setting(config, "paper.subtitle", "Journal personnel")),
+            motto=str(setting(config, "paper.motto", "Lire le monde avec attention.")),
+        ),
+        sources=[status], personal_articles=items,
+        expected_categories=selected,
+        personal_features=features,
+        thought=thought_for_date(date),
+        personal=PersonalBlock(greeting="Bonjour. Voici les informations sourcées du jour."),
+    )
+    return normaliser_edition(edition, mode="standard" if mode == "auto" else mode)

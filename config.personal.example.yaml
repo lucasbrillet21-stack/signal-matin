@@ -1,0 +1,53 @@
+# Profil personnel : copier vers config.yaml pour l'activer localement.
+# Les flux du Monde sont réservés à un usage personnel, non professionnel et non collectif.
+profile: personal
+demo: false
+paper:
+  title: "Signal Matin"
+  subtitle: "Journal personnel"
+  motto: "Voir clair avant de voir l'écran."
+news:
+  limit: 18
+  max_age_hours: 48
+  feeds:
+    - {name: "Le Monde", category: "International", url: "https://www.lemonde.fr/international/rss_full.xml"}
+    - {name: "Euronews", category: "International", url: "https://fr.euronews.com/rss?format=mrss&level=theme&name=news"}
+    - {name: "Le Monde", category: "Géopolitique", url: "https://www.lemonde.fr/europe/rss_full.xml"}
+    - {name: "Euronews", category: "Géopolitique", url: "https://fr.euronews.com/rss?format=mrss&level=vertical&name=my-europe"}
+    - {name: "Le Monde", category: "Économie", url: "https://www.lemonde.fr/economie/rss_full.xml"}
+    - {name: "Le Monde", category: "Sciences", url: "https://www.lemonde.fr/sciences/rss_full.xml"}
+    - {name: "Le Monde", category: "Intelligence artificielle", url: "https://www.lemonde.fr/intelligence-artificielle/rss_full.xml"}
+    - {name: "Le Monde", category: "Informatique", url: "https://www.lemonde.fr/pixels/rss_full.xml"}
+    - {name: "Le Monde", category: "Ingénierie", url: "https://www.lemonde.fr/technologies/rss_full.xml"}
+    - {name: "Le Monde", category: "Philosophie", url: "https://www.lemonde.fr/le-monde-de-la-philosophie/rss_full.xml"}
+    - {name: "Le Monde", category: "Littérature", url: "https://www.lemonde.fr/livres/rss_full.xml"}
+    - {name: "Le Monde", category: "Histoire", url: "https://www.lemonde.fr/histoire/rss_full.xml"}
+    - {name: "Le Monde", category: "Musique", url: "https://www.lemonde.fr/musiques/rss_full.xml"}
+    - {name: "Le Monde", category: "Culture", url: "https://www.lemonde.fr/culture/rss_full.xml"}
+synthesis:
+  enabled: true
+  # Les articles longs exigent l'API configurée dans .env ou les secrets GitHub.
+editorial:
+  timezone: "Australia/Sydney"
+  rotation:
+    monday: ["International", "Géopolitique", "Économie"]
+    tuesday: ["Sciences", "Ingénierie", "Intelligence artificielle"]
+    wednesday: ["Philosophie", "Littérature", "Histoire"]
+    thursday: ["Informatique", "Intelligence artificielle", "Économie"]
+    friday: ["Musique", "Culture", "Littérature"]
+    saturday: ["Histoire", "Sciences", "Curiosités"]
+    sunday: ["Géopolitique", "Philosophie", "Culture"]
+  targets:
+    dossier: [700, 900]
+    article: [450, 600]
+    lecture: [300, 450]
+  # Source de contexte public avec attribution ; sujet tournant par catégorie.
+  evergreen:
+    Philosophie: ["Blaise Pascal", "Albert Camus", "Friedrich Nietzsche"]
+    Littérature: ["Franz Kafka", "Fiodor Dostoïevski", "Albert Camus"]
+    Histoire: ["Révolution industrielle", "Commune de Paris", "Imprimerie"]
+    Musique: ["Post-punk", "Madchester", "Punk rock"]
+    Culture: ["Surréalisme", "Dadaïsme", "Cinéma expressionniste allemand"]
+    Curiosités: ["Machine d'Anticythère", "Manuscrit de Voynich", "Paradoxe de Fermi"]
+interests:
+  music_keywords: ["rock", "punk", "post-punk", "madchester", "indépendant", "indie"]

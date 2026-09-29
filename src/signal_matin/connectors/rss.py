@@ -6,6 +6,7 @@ import html
 import math
 import re
 import urllib.request
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
@@ -27,7 +28,7 @@ def _text(element: ET.Element, names: set[str]) -> str:
 
 def _link(element: ET.Element) -> str | None:
     for child in element:
-        if _tag(child) == "link":
+        if _tag(child) == "link" and child.attrib.get("rel", "alternate") == "alternate":
             return child.attrib.get("href") or (child.text or "").strip() or None
     return None
 
@@ -56,9 +57,16 @@ def _payload(url: str) -> bytes:
         return response.read(2_000_000)
 
 
+def _canonical(url: str) -> str:
+    parts = urlsplit(url)
+    query = urlencode([(key, value) for key, value in parse_qsl(parts.query)
+                       if not key.lower().startswith("utm_") and key.lower() not in {"fbclid", "gclid"}])
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), query, ""))
+
+
 def collect_rss(
     feeds: list, now: dt.datetime, *, limit: int = 12, max_age_hours: int = 72,
-    status_name: str = "Actualites",
+    status_name: str = "Actualites", require_date: bool = False,
 ) -> tuple[list[NewsItem], DataSourceStatus]:
     if not feeds:
         return [], DataSourceStatus(
@@ -97,15 +105,23 @@ def collect_rss(
             bucket: list[NewsItem] = []
             for node in (node for node in root.iter() if _tag(node) in {"item", "entry"}):
                 title = _plain(_text(node, {"title"}))
-                link = _link(node) or url
-                key = (link or title).casefold()
+                link = _link(node)
+                if not link or urlsplit(link).scheme not in {"http", "https"}:
+                    continue
+                key = _canonical(link).casefold()
                 published = _date(node)
-                if not title or key in seen:
+                title_key = re.sub(r"\W+", " ", title.casefold()).strip()
+                if not title or key in seen or title_key in seen:
+                    continue
+                if require_date and published is None:
                     continue
                 if published and (published < cutoff or published > future_limit):
                     continue
                 seen.add(key)
+                seen.add(title_key)
                 summary = _plain(_text(node, {"description", "summary", "content"}))
+                # Les flux peuvent contenir un article entier : ne garder qu'un court extrait.
+                summary = summary[:300].rsplit(" ", 1)[0] if len(summary) > 300 else summary
                 bucket.append(NewsItem(
                     title=title,
                     category=category,

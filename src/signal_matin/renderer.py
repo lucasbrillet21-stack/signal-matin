@@ -12,7 +12,7 @@ import mimetypes
 from pathlib import Path
 
 from .models import (
-    AgendaItem, DensityMode, DigestItem, MorningEdition, NewsItem,
+    AgendaItem, DensityMode, DigestItem, FeatureArticle, MorningEdition, NewsItem,
     Recommendation, TaskItem,
 )
 
@@ -940,6 +940,8 @@ def _page_standard_tail(edition: MorningEdition, number: int) -> str:
 def render_html(edition: MorningEdition, css: str | None = None) -> str:
     css = CSS_PATH.read_text(encoding="utf-8") if css is None else css
     pagination = PAGINATION_PATH.read_text(encoding="utf-8")
+    if edition.personal_journal:
+        return _render_personal(edition, css, pagination)
     mode = edition.edition.density
     pages = [_page_one(edition)]
     secondary = edition.news.all_secondary()
@@ -1020,3 +1022,95 @@ def write_html(edition: MorningEdition, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(render_html(edition), encoding="utf-8")
     return path
+
+
+PERSONAL_CSS = """
+.personal-intro {font-family:var(--serif);font-size:15pt;line-height:1.4;margin:8mm 0}
+.personal-journal .sheet .page-content {display:block;height:258mm}
+.personal-journal .sheet:first-child .page-content {height:233mm}
+.personal-continuation-label {font:700 8pt var(--sans);text-transform:uppercase;letter-spacing:.1em;border-bottom:1px solid #777;padding:2mm 0;margin-bottom:5mm}
+.personal-feature-head {break-inside:avoid;border-top:2px solid #222;padding:4mm 0 2mm;margin-top:5mm}
+.personal-feature-head h2 {font-family:var(--display);font-size:23pt;line-height:1.12;margin:1mm 0 3mm}
+.personal-feature-head small {font:700 8pt var(--sans);text-transform:uppercase;letter-spacing:.08em}
+.personal-paragraph,.personal-feature-head p {font-family:var(--serif);font-size:11.5pt;line-height:1.48;text-align:justify;margin:0 0 4mm;break-inside:avoid}
+.personal-paragraph strong,.personal-feature-head p strong {font:700 8pt var(--sans);text-transform:uppercase;letter-spacing:.04em}
+.personal-ending {break-inside:avoid}
+.personal-source {font-family:var(--sans);font-size:8pt;line-height:1.45;margin-top:3mm;border-top:1px solid #777;padding-top:2mm}
+.personal-source a,.thought-source a {color:#222;text-decoration:underline;overflow-wrap:anywhere}
+.thought-card {border:2px solid #222;padding:5mm;margin:5mm 0;break-inside:avoid}
+.thought-card h2 {font-family:var(--display);font-size:21pt;margin:0 0 3mm}
+.thought-card blockquote {margin:2mm 0;font-size:14pt;font-style:italic}
+.thought-card p {font-size:10.5pt;line-height:1.4}
+.personal-absence {font-size:9pt;color:#333;margin-top:5mm}
+"""
+
+
+def _feature_blocks(feature: FeatureArticle) -> str:
+    labels = {"facts": "Faits rapportés", "context": "Contexte", "mechanisms": "Mécanismes",
+              "analysis": "Analyse",
+              "consequences": "Conséquences", "limits": "Limites"}
+    tier_label = {"dossier": "Grand dossier", "article": "Deuxième article",
+                  "lecture": "Troisième article"}[feature.tier]
+    blocks = []
+    source_list = " ; ".join(
+        f'[{index}] <a href="{_e(source.url)}">{_e(source.name)}</a>'
+        for index, source in enumerate(feature.sources, 1)
+    )
+    license_link = (
+        ' · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>'
+        if feature.attribution else ""
+    )
+    source_html = (f'<div class="personal-source">Sources : {source_list}. '
+                   f'{_e(feature.attribution)}{license_link}</div>')
+    for index, paragraph in enumerate(feature.paragraphs):
+        refs = " ".join(f"[{number}]" for number in paragraph.source_ids)
+        body = (f'<strong>{labels[paragraph.kind]} — </strong>{_e(paragraph.text)} '
+                f'<sup>{_e(refs)}</sup>')
+        if index == 0:
+            note = " · Format abrégé : matière disponible limitée" if feature.shortfall else ""
+            blocks.append(
+                f'<div class="personal-feature-head"><small>{_e(feature.category)} · '
+                f'{tier_label}{note}</small><h2>{_e(feature.title)}</h2><p>{body}</p>'
+                f'{source_html if len(feature.paragraphs) == 1 else ""}</div>'
+            )
+        elif index == len(feature.paragraphs) - 1:
+            blocks.append(f'<div class="personal-ending"><p class="personal-paragraph">{body}</p>'
+                          f'{source_html}</div>')
+        else:
+            blocks.append(f'<p class="personal-paragraph">{body}</p>')
+    return "".join(blocks)
+
+
+def _render_personal(edition: MorningEdition, css: str, pagination: str) -> str:
+    features = edition.personal_features
+    thought = edition.thought
+    thought_html = ""
+    if thought:
+        thought_html = (
+            '<aside class="thought-card"><h2>Pensée du jour</h2>'
+            f'<blockquote>« {_e(thought.text)} »</blockquote>'
+            f'<small>{_e(thought.author)}, <em>{_e(thought.work)}</em>, {_e(thought.reference)}</small>'
+            f'<p>{_e(thought.explanation)}</p>'
+            f'<small class="thought-source">Texte : <a href="{_e(thought.source_url)}">'
+            'édition consultable</a></small></aside>'
+        )
+    first_body = (
+        '<div class="personal-intro">Trois regards au plus, pour lire les faits et leur contexte.</div>'
+        + thought_html + "".join(_feature_blocks(feature) for feature in features)
+    )
+    pages = [_page(edition, 1, "Le journal du jour", first_body, first=True, slug="personal")]
+    absent = [category for category in edition.expected_categories
+              if category not in {feature.category for feature in features}]
+    if absent:
+        notice = ("Rubriques sans article suffisamment documenté : "
+                  + ", ".join(absent) + ".")
+        if not features:
+            notice += " Vérifie l'accès aux sources et la configuration de l'API de rédaction."
+        pages[0] = pages[0].replace(
+            "</main>", f'<p class="personal-absence">{_e(notice)}</p></main>', 1)
+    return f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{_e(edition.edition.title)} - {_e(_date_fr(edition.edition.date))}</title>
+<style>{css}\n{PERSONAL_CSS}</style></head>
+<body class="density-standard personal-journal"><div class="publication">{''.join(pages)}</div>
+<script>{pagination}</script></body></html>"""

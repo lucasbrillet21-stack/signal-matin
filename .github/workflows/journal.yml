@@ -1,0 +1,66 @@
+name: journal personnel
+
+on:
+  schedule:
+    # 07:00 Sydney = 20:00 UTC (AEDT) ou 21:00 UTC (AEST), la veille.
+    - cron: "0 20 * * *"
+    - cron: "0 21 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: journal-personnel
+  cancel-in-progress: false
+
+jobs:
+  journal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Vérifier le créneau de Sydney
+        id: gate
+        run: python scripts/should_run_sydney.py '${{ github.event.schedule }}'
+      - name: Vérifier les paramètres privés
+        id: ready
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GMAIL_SENDER: ${{ secrets.GMAIL_SENDER }}
+          GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SIGNAL_MATIN_LLM_URL: ${{ secrets.SIGNAL_MATIN_LLM_URL }}
+          SIGNAL_MATIN_LLM_MODEL: ${{ secrets.SIGNAL_MATIN_LLM_MODEL }}
+          SIGNAL_MATIN_LLM_API_KEY: ${{ secrets.SIGNAL_MATIN_LLM_API_KEY }}
+        run: |
+          if [[ -n "$GMAIL_SENDER" && -n "$GMAIL_RECIPIENT" && -n "$GMAIL_APP_PASSWORD" && -n "$SIGNAL_MATIN_LLM_URL" && -n "$SIGNAL_MATIN_LLM_MODEL" && -n "$SIGNAL_MATIN_LLM_API_KEY" ]]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Secrets Gmail ou API de rédaction manquants ; aucun email ne sera envoyé."
+          fi
+      - name: Installer Signal Matin
+        if: steps.ready.outputs.ready == 'true'
+        run: |
+          python -m pip install -e .
+          python -m playwright install --with-deps chromium
+      - name: Générer et envoyer le PDF
+        if: steps.ready.outputs.ready == 'true'
+        env:
+          GMAIL_SENDER: ${{ secrets.GMAIL_SENDER }}
+          GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SIGNAL_MATIN_LLM_URL: ${{ secrets.SIGNAL_MATIN_LLM_URL }}
+          SIGNAL_MATIN_LLM_MODEL: ${{ secrets.SIGNAL_MATIN_LLM_MODEL }}
+          SIGNAL_MATIN_LLM_API_KEY: ${{ secrets.SIGNAL_MATIN_LLM_API_KEY }}
+        run: python main.py --generate --live --config config.personal.example.yaml --email
+      - name: Conserver le PDF comme artefact
+        if: steps.ready.outputs.ready == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: journal-personnel
+          path: output/pdf/*.pdf
+          if-no-files-found: ignore

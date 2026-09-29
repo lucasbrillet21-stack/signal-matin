@@ -10,6 +10,113 @@ vrai journal monochrome et peut produire un PDF ou l'envoyer à l'imprimante.
 
 ![Aperçu de la une](docs/images/demo-page-1.png)
 
+## Journal personnel de 07:00 (Sydney)
+
+Le profil [config.personal.example.yaml](config.personal.example.yaml) choisit
+trois rubriques au maximum selon la date locale de Sydney. La rotation se règle
+dans `editorial.rotation` : lundi international, géopolitique, économie ; mardi
+sciences, ingénierie, IA ; mercredi philosophie, littérature, histoire ; jeudi
+informatique, IA, économie ; vendredi musique, culture, littérature ; samedi
+histoire, sciences, curiosités ; dimanche géopolitique, philosophie, culture.
+Chaque numéro contient aussi une pensée de Pascal sourcée, expliquée en 150 à
+200 mots. Les choix musicaux donnent la priorité au rock, punk, post-punk,
+Madchester et aux scènes indépendantes via `interests.music_keywords`.
+
+Le grand dossier vise 700 à 900 mots, le deuxième article 450 à 600 et le
+troisième 300 à 450, pour 1 600 à 2 150 mots environ avec la pensée. Le
+programme réduit ou omet un article lorsque les sources disponibles ne
+permettent pas cette longueur. Il n'y a ni agenda, météo, tâches, statistiques
+sociales ou mots croisés fictifs dans ce profil. Le mode démo historique reste
+disponible par `--demo`.
+
+### Essai local sans email (PowerShell)
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m playwright install chromium
+if (-not (Test-Path config.yaml)) { Copy-Item config.personal.example.yaml config.yaml }
+.\.venv\Scripts\python.exe main.py --generate --live --config config.yaml
+```
+
+Le PDF daté se trouve dans `output/pdf/`, l'aperçu dans `output/preview/` et
+les données normalisées dans `output/data/`. `--generate` n'envoie aucun email.
+Les liens vers les articles originaux et vers l'édition des *Pensées* sont
+intégrés au PDF A4. La pagination est vérifiée avant export ; en cas de
+débordement non résolu, la commande échoue.
+
+Les flux RSS servent à trouver des sujets récents. Le programme consulte les
+pages originales publiques lorsque `robots.txt` l'autorise. Pour philosophie,
+littérature, histoire, musique, culture et curiosités, des sujets intemporels
+configurés dans `editorial.evergreen` peuvent utiliser des extraits de Wikipédia
+avec attribution et lien [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+Le texte des sources sert de matériau de rédaction et n'est pas reproduit
+intégralement. Les flux préconfigurés du Monde sont [réservés à un usage strictement
+personnel, non professionnel et non collectif](https://www.lemonde.fr/le-monde-et-vous/article/2025/07/14/les-flux-rss-du-monde-fr_5498778_3237.html).
+Deux [flux RSS Euronews](https://fr.euronews.com/widgets) apportent une autre
+source sur l'international et l'Europe ; consulte leurs conditions d'utilisation.
+Remplace-les dans `config.yaml` si cet usage ne te convient pas. Seuls les flux
+des rubriques du jour sont consultés ; ils doivent être accessibles depuis la
+machine qui génère le journal.
+
+### Rédaction longue par API
+
+`synthesis.enabled` est actif dans le profil personnel. Renseigne dans `.env`
+`SIGNAL_MATIN_LLM_URL` (URL HTTPS d'une API compatible Chat Completions),
+`SIGNAL_MATIN_LLM_MODEL` et `SIGNAL_MATIN_LLM_API_KEY`. L'API reçoit un corpus
+borné de sources et renvoie des paragraphes structurés : faits rapportés,
+contexte, analyse, conséquences et limites, avec numéros de sources. La sortie
+est rejetée si les références manquent. Un texte plus court est indiqué comme
+« format abrégé ». Les liens originaux restent cliquables dans le PDF.
+
+Une API de modèle peut malgré ces contrôles produire une erreur factuelle.
+Relis les dossiers avant toute diffusion. Sans API, sans réseau ou sans matière
+suffisante, aucune actualité brève n'est déguisée en dossier : le PDF indique
+les rubriques indisponibles. L'envoi automatique refuse alors de transmettre
+un numéro sans article.
+
+### Envoi Gmail et GitHub Actions
+
+L'envoi est explicite : `main.py --generate --live --config config.yaml --email`.
+Renseigne `GMAIL_SENDER`, `GMAIL_RECIPIENT` et `GMAIL_APP_PASSWORD` dans un
+fichier `.env` local ignoré par Git. Le mot de passe est un [mot de passe
+d'application Google](https://support.google.com/accounts/answer/185833?hl=fr),
+ce qui exige la validation en deux étapes ; l'option peut être indisponible
+sur certains comptes. Aucun test de ce dépôt n'envoie de message.
+
+Pour activer la livraison automatique, publie le dépôt et le workflow
+[journal.yml](.github/workflows/journal.yml) sur la branche par défaut, puis
+crée dans **Settings → Secrets and variables → Actions** les secrets
+`GMAIL_SENDER`, `GMAIL_RECIPIENT` et `GMAIL_APP_PASSWORD`. Les trois secrets
+`SIGNAL_MATIN_LLM_URL`, `SIGNAL_MATIN_LLM_MODEL` et
+`SIGNAL_MATIN_LLM_API_KEY` sont nécessaires au profil personnel long dans le
+workflow. Le bouton **Run
+workflow** permet un lancement manuel, qui envoie aussi l'email si les secrets
+sont présents.
+
+Le workflow lance deux créneaux UTC et ne garde que celui qui correspond à
+07:00 à Sydney selon l'heure d'été ou d'hiver. Il génère le PDF avant l'envoi.
+[GitHub indique que les exécutions planifiées peuvent être retardées](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows) ;
+07:00 est donc l'heure visée pour le démarrage, pas une garantie d'arrivée
+exacte. Le workflow peut aussi être désactivé après une longue inactivité du
+dépôt public. Le PDF est conservé comme artefact du workflow.
+
+### Vérifications locales
+
+```powershell
+$env:PYTHONPATH = 'src'
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_personal.py -v
+.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe scripts/verify_personal_layout.py
+```
+
+Les tests personnels couvrent les sept jours, le trajet effectif jusqu'au
+rédacteur long, les longueurs visées, les sources, le PDF A4, les liens, le
+repli hors ligne et les deux régimes horaires de Sydney.
+Le dernier script produit `output/pdf/verification-maquette-personnelle.pdf`,
+marqué **MAQUETTE TECHNIQUE — TEXTE FICTIF**. Il vérifie une mise en page longue
+sans passer ses paragraphes de test pour des nouvelles réelles et sans email.
+
 > **Pour essayer, aucune API, aucun compte et aucune imprimante ne sont
 > nécessaires.** Le mode démo fonctionne avec des données fictives.
 

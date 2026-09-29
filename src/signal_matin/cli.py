@@ -6,6 +6,7 @@ import datetime as dt
 import sys
 import webbrowser
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .config import ROOT, load_config, setting
 from .connectors.google_calendar import authorize_google
@@ -20,6 +21,7 @@ from .ereader_server import (
     serve_reader,
 )
 from .mock_data import construire_demo
+from .mailer import send_pdf
 from .normalizer import charger_edition, ecrire_edition, normaliser_edition
 from .pdf import generer_pdf
 from .pipeline import build_live
@@ -78,14 +80,16 @@ def _edition(args, config: dict):
     demo = args.demo or (not args.live and bool(config.get("demo", not config)))
     if demo:
         return normaliser_edition(construire_demo(args.date), mode=args.mode)
-    now = dt.datetime.combine(args.date, dt.datetime.now().astimezone().timetz())
+    zone = (ZoneInfo(str(setting(config, "editorial.timezone", "Australia/Sydney")))
+            if config.get("profile") == "personal" else dt.datetime.now().astimezone().tzinfo)
+    now = dt.datetime.combine(args.date, dt.datetime.now(zone).timetz())
     return build_live(config, now=now, mode=args.mode)
 
 
 def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", default="config.yaml", help="fichier YAML local")
     parser.add_argument("--input", help="edition JSON deja normalisee")
-    parser.add_argument("--date", type=_date, default=dt.date.today())
+    parser.add_argument("--date", type=_date, default=None)
     parser.add_argument("--mode", choices=("auto", "compact", "standard", "extended"), default="auto")
     parser.add_argument("--output", default="", help="chemin de sortie personnalisé")
     group = parser.add_mutually_exclusive_group()
@@ -110,6 +114,8 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--printer", default="")
             command.add_argument("--duplex", action="store_true")
             command.add_argument("--confirm", action="store_true")
+        if name == "generate":
+            command.add_argument("--email", action="store_true", help="envoie le PDF par Gmail après sa génération")
     ereader = sub.add_parser("ereader", help="génère une édition EPUB ou PDF e-ink")
     _common(ereader)
     ereader.add_argument(
@@ -149,6 +155,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_config(args.config)
+    if hasattr(args, "date") and args.date is None:
+        args.date = (dt.datetime.now(ZoneInfo(str(setting(config, "editorial.timezone", "Australia/Sydney")))).date()
+                     if config.get("profile") == "personal" else dt.date.today())
     if args.command == "auth-google":
         token = authorize_google(setting(config, "calendar.google", {}) or {}, ROOT)
         print(f"Jeton OAuth enregistre localement: {token}")
@@ -219,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.input and args.demo:
         raise SystemExit("Choisis --input ou --demo, pas les deux.")
     edition = _edition(args, config)
+    if args.command == "generate" and args.email and edition.demo:
+        raise SystemExit("Envoi refusé pour une édition de démonstration.")
     pdf_path, html_path, data_path = _paths(args.date, args.output)
     ecrire_edition(edition, data_path)
     if args.command == "ereader":
@@ -254,6 +265,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"PDF genere: {pdf_path}")
     print(f"Preview: {html_path}")
     print(f"JSON: {data_path}")
+    if args.command == "generate" and args.email:
+        if edition.personal_journal and not edition.personal_features:
+            raise SystemExit("Envoi refusé : aucun dossier personnel suffisamment documenté.")
+        send_pdf(pdf_path, date_label=args.date.isoformat())
+        print("PDF envoyé par Gmail.")
     return 0
 
 
