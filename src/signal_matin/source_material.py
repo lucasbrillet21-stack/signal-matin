@@ -113,7 +113,7 @@ def wikipedia_material(topic: str) -> Material | None:
         title = page["title"]
         url = "https://fr.wikipedia.org/wiki/" + urllib.parse.quote(title.replace(" ", "_"))
         return Material(
-            source=SourceRef(name="Wikipédia, contributeurs", url=url),
+            source=SourceRef(name="Wikipédia, contributeurs", title=title, url=url),
             title=title, text=text[:16_000],
             license_note="Source Wikipédia, CC BY-SA 4.0 ; rédaction adaptée.",
         )

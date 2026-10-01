@@ -1053,7 +1053,9 @@ def _feature_blocks(feature: FeatureArticle) -> str:
                   "lecture": "Troisième article"}[feature.tier]
     blocks = []
     source_list = " ; ".join(
-        f'[{index}] <a href="{_e(source.url)}">{_e(source.name)}</a>'
+        f'[{index}] {_e(source.name)} — {_e(source.title or "Titre non indiqué")}, '
+        f'{_e(source.published_at.strftime("%d/%m/%Y") if source.published_at else "date non indiquée")} — '
+        f'<a href="{_e(str(source.url))}">{_e(str(source.url))}</a>'
         for index, source in enumerate(feature.sources, 1)
     )
     license_link = (

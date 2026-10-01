@@ -52,6 +52,11 @@ def feed_texts(element: ET.Element) -> dict[str, str]:
     return result
 
 
+def _matches_any(value: str, keywords: list[str]) -> bool:
+    return not keywords or any(re.search(r"(?<!\w)" + re.escape(word.casefold()) + r"(?!\w)",
+                                    value.casefold()) for word in keywords if word.strip())
+
+
 def _date(element: ET.Element) -> dt.datetime | None:
     value = _text(element, {"pubdate", "published", "updated", "date"})
     if not value:
@@ -101,8 +106,11 @@ def collect_rss(
             name = str(entry.get("name") or entry.get("nom") or "Source")
             category = str(entry.get("category") or entry.get("categorie") or "Actualites")
             url = str(entry.get("url") or "")
+            include_any = [str(word) for word in (entry.get("include_any") or [])]
         else:
             continue
+        if isinstance(entry, str):
+            include_any = []
         if not url:
             continue
         try:
@@ -132,17 +140,19 @@ def collect_rss(
                     continue
                 if published and (published < cutoff or published > future_limit):
                     continue
-                seen.add(key)
-                seen.add(title_key)
                 texts = feed_texts(node)
                 summary = texts.get("description") or texts.get("summary") or texts.get("encoded") or texts.get("content") or ""
                 rich_text = max(texts.values(), key=len, default=summary)
+                if not _matches_any(f"{title} {summary[:500]}", include_any):
+                    continue
+                seen.add(key)
+                seen.add(title_key)
                 bucket.append(NewsItem(
                     title=title,
                     category=category,
                     summary=(summary[:1600] or "Resume non fourni par le flux."),
                     expanded_summary=rich_text[:12_000],
-                    source=SourceRef(name=name, url=link, published_at=published),
+                    source=SourceRef(name=name, title=title, url=link, published_at=published),
                 ))
                 if len(bucket) >= per_feed:
                     break

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
+from urllib.parse import quote
 from unittest.mock import patch
 
 from pypdf import PdfReader
@@ -14,7 +15,7 @@ from pypdf import PdfReader
 from scripts.should_run_sydney import should_run
 from signal_matin.config import load_config
 from signal_matin.connectors.rss import collect_rss
-from signal_matin.editorial import categories_for_date, local_date, write_features
+from signal_matin.editorial import _related, categories_for_date, local_date, write_features
 from signal_matin.models import ArticleParagraph, FeatureArticle, NewsItem, SourceRef
 from signal_matin.pdf import generer_pdf, inspecter_html
 from signal_matin.pipeline import build_live
@@ -45,9 +46,9 @@ def fixture_feature(category: str, tier: str, count: int) -> FeatureArticle:
 
 def feed(date: dt.datetime, category: str) -> bytes:
     stamp = date.astimezone(dt.timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
-    return (f"<rss><channel><item><title>Actualité {category}</title>"
-            f"<link>https://example.org/{category}</link>"
-            f"<description>Résumé RSS de validation pour {category}.</description>"
+    return (f"<rss><channel><item><title>Actualité {category.replace('&', '&amp;')}</title>"
+            f"<link>https://example.org/{quote(category)}</link>"
+            f"<description>Résumé RSS de validation pour {category.replace('&', '&amp;')}.</description>"
             f"<pubDate>{stamp}</pubDate></item></channel></rss>").encode()
 
 
@@ -58,18 +59,19 @@ class PersonalTests(unittest.TestCase):
 
     def test_all_seven_rotations_and_sydney_date(self):
         expected = [
-            ["International", "Géopolitique", "Économie"],
-            ["Sciences", "Ingénierie", "Intelligence artificielle"],
+            ["International & Géopolitique", "Économie", "Sciences & Curiosités"],
+            ["Sciences & Curiosités", "Ingénierie", "Intelligence artificielle"],
             ["Philosophie", "Littérature", "Histoire"],
             ["Informatique", "Intelligence artificielle", "Économie"],
             ["Musique", "Culture", "Littérature"],
-            ["Histoire", "Sciences", "Curiosités"],
-            ["Géopolitique", "Philosophie", "Culture"],
+            ["Histoire", "Sciences & Curiosités", "Culture"],
+            ["International & Géopolitique", "Philosophie", "Culture"],
         ]
         for index, categories in enumerate(expected):
             date = BASE + dt.timedelta(days=index)
             self.assertEqual(categories_for_date(self.config, date), categories)
             self.assertLessEqual(len(categories), 3)
+        self.assertEqual(len({name for day in expected for name in day}), 11)
         self.assertEqual(local_date(self.config,
                          dt.datetime(2026, 9, 27, 21, tzinfo=dt.timezone.utc)), BASE)
         bad = {**self.config, "editorial": {"rotation": {"monday": ["Culture"]}}}
@@ -78,12 +80,14 @@ class PersonalTests(unittest.TestCase):
 
     def test_real_pipeline_uses_only_scheduled_feeds_and_long_writer(self):
         selected = categories_for_date(self.config, BASE)
-        urls = {entry["url"]: entry["category"] for entry in self.config["news"]["feeds"]}
+        urls: dict[str, set[str]] = {}
+        for entry in self.config["news"]["feeds"]:
+            urls.setdefault(entry["url"], set()).add(entry["category"])
         called = []
 
         def payload(url):
             called.append(url)
-            return feed(self.now, urls[url])
+            return feed(self.now, next(iter(urls[url] & set(selected))))
 
         def material(item):
             return Material(item.source, item.title, (item.summary + " ") * 80)
@@ -103,7 +107,7 @@ class PersonalTests(unittest.TestCase):
              patch("signal_matin.synthesis._chat", side_effect=chat):
             edition = build_live(self.config, now=self.now)
         self.assertEqual([article.category for article in edition.personal_features], selected)
-        self.assertTrue(all(urls[url] in selected for url in called))
+        self.assertTrue(all(urls[url] & set(selected) for url in called))
         self.assertEqual(len(edition.personal_features), 3)
         for article, (low, high) in zip(edition.personal_features,
                                         [(700, 900), (450, 600), (300, 450)]):
@@ -114,7 +118,7 @@ class PersonalTests(unittest.TestCase):
         html = render_html(edition)
         self.assertEqual(html.count('class="personal-feature-head"'), 3)
         self.assertNotIn("Résumé RSS de validation", html)
-        self.assertIn('href="https://example.org/International"', html)
+        self.assertIn('href="https://example.org/International%20%26%20G%C3%A9opolitique"', html)
         layout = inspecter_html(html)
         self.assertFalse(any(page["overflow"] for page in layout))
         self.assertTrue(all(page["used_ratio"] >= 0.45 for page in layout[:-1]))
@@ -128,7 +132,7 @@ class PersonalTests(unittest.TestCase):
             self.assertTrue(any("/Annots" in page for page in reader.pages))
             uris = [str(annotation.get_object().get("/A", {}).get("/URI", ""))
                     for page in reader.pages for annotation in page.get("/Annots", [])]
-            self.assertTrue(any("example.org/International" in uri for uri in uris))
+            self.assertTrue(any("example.org/International%20%26%20G%C3%A9opolitique" in uri for uri in uris))
             self.assertTrue(all(len(page.extract_text() or "") > 500 for page in reader.pages))
 
     def test_long_writer_rejects_missing_citations(self):
@@ -179,7 +183,7 @@ class PersonalTests(unittest.TestCase):
             self.assertEqual(write_features(self.config, dt.date(2026, 10, 1), selected, items), [])
         compose.assert_not_called()
         self.assertEqual(sum("aucun appel IA" in line for line in logs.output), 3)
-        self.assertEqual(sum("page de vérification" in line for line in logs.output), 3)
+        self.assertEqual(sum("page de vérification" in line for line in logs.output), 1)
 
     def test_ai_http_error_reports_status_without_secret(self):
         source = SourceRef(name="Source", url="https://example.org/article")
@@ -215,7 +219,112 @@ class PersonalTests(unittest.TestCase):
              patch("signal_matin.editorial.compose_feature", return_value=None):
             write_features(self.config, dt.date(2026, 10, 1), ["Informatique"],
                            [first, chosen])
-        self.assertEqual([call.args[0] for call in extract.call_args_list], [chosen, first])
+        self.assertEqual([call.args[0] for call in extract.call_args_list], [chosen])
+
+    def test_multisource_group_uses_event_evidence_not_only_shared_organisation(self):
+        published = dt.datetime(2026, 10, 1, 5, tzinfo=dt.timezone.utc)
+        def item(name, url, title, summary):
+            return NewsItem(title=title, category="Ingénierie", summary=summary,
+                            source=SourceRef(name=name, title=title, url=url, published_at=published))
+
+        first = item("NASA", "https://nasa.gov/a",
+                     "NASA reporte Artemis III après un incident de moteur",
+                     "La mission Artemis III est reportée après un incident sur le moteur du véhicule.")
+        second = item("Smithsonian", "https://smithsonianmag.com/b",
+                      "Un incident moteur décale le calendrier Artemis III",
+                      "Artemis III connaît un report à cause d'un incident sur le moteur du véhicule.")
+        other = item("NASA", "https://nasa.gov/c",
+                     "NASA teste un moteur pour Artemis II",
+                     "Un essai de moteur distinct est prévu pour le programme Artemis II.")
+        self.assertTrue(_related(first, second))
+        self.assertFalse(_related(first, other))
+        self.assertFalse(_related(second, other))
+        doi_a = item("Revue A", "https://a.example/article",
+                     "Étude sur un sujet précis", "DOI 10.1234/exemple.2026")
+        doi_b = item("Revue B", "https://b.example/article",
+                     "Résultats publiés cette semaine", "DOI 10.1234/exemple.2026")
+        self.assertTrue(_related(doi_a, doi_b))
+        self.assertFalse(_related(doi_a, doi_a))
+        older = doi_b.model_copy(update={"source": doi_b.source.model_copy(update={
+            "published_at": published - dt.timedelta(days=5)})})
+        self.assertFalse(_related(doi_a, older))
+
+        seen = []
+        def compose(category, tier, materials, target):
+            seen.append([material.source.name for material in materials])
+            return fixture_feature(category, tier, 800)
+
+        with patch("signal_matin.editorial.llm_configured", return_value=True), \
+             patch("signal_matin.editorial.article_material",
+                   side_effect=lambda news: Material(news.source, news.title, news.summary * 12)), \
+             patch("signal_matin.editorial.compose_feature", side_effect=compose):
+            features = write_features(self.config, published.date(), ["Ingénierie"],
+                                      [first, second, other])
+        self.assertEqual(len(features), 1)
+        self.assertEqual(set(seen[0]), {"NASA", "Smithsonian"})
+
+    def test_failed_rubric_moves_to_next_and_reuses_first_tier(self):
+        items = [NewsItem(title="Une étude informatique documentée", category="Informatique",
+                          summary="Texte. " * 150,
+                          source=SourceRef(name="GitHub Blog", url="https://github.blog/a")),
+                 NewsItem(title="Un travail sur les réseaux de neurones", category="Intelligence artificielle",
+                          summary="Texte. " * 150,
+                          source=SourceRef(name="arXiv", url="https://arxiv.org/abs/1"))]
+        with patch("signal_matin.editorial.llm_configured", return_value=True), \
+             patch("signal_matin.editorial.article_material",
+                   side_effect=lambda item: Material(item.source, item.title, item.summary)), \
+             patch("signal_matin.editorial.compose_feature",
+                   side_effect=lambda category, tier, materials, target: fixture_feature(category, tier, 800)):
+            features = write_features(self.config, BASE,
+                                      ["Philosophie", "Informatique", "Intelligence artificielle"], items)
+        self.assertEqual([(feature.category, feature.tier) for feature in features],
+                         [("Informatique", "dossier"), ("Intelligence artificielle", "article")])
+
+    def test_pdf_lists_only_cited_sources_with_title_date_and_link(self):
+        when = dt.datetime(2026, 10, 1, 5, tzinfo=dt.timezone.utc)
+        first = Material(SourceRef(name="NASA", title="Une découverte vérifiée",
+                                   url="https://nasa.gov/actualite", published_at=when),
+                         "Une découverte vérifiée", "Matière vérifiée. " * 100)
+        unused = Material(SourceRef(name="Autre média", title="Contexte non utilisé",
+                                    url="https://example.org/non-utilise", published_at=when),
+                          "Contexte non utilisé", "Autre matière. " * 100)
+        fixture = fixture_feature("Sciences & Curiosités", "lecture", 360)
+        response = json.dumps({"title": fixture.title,
+                               "paragraphs": [paragraph.model_dump() for paragraph in fixture.paragraphs]})
+        env = {"SIGNAL_MATIN_LLM_URL": "https://example.org/chat",
+               "SIGNAL_MATIN_LLM_MODEL": "test", "SIGNAL_MATIN_LLM_API_KEY": "test"}
+        with patch.dict(os.environ, env), patch("signal_matin.synthesis._chat", return_value=response):
+            feature = compose_feature("Sciences & Curiosités", "lecture", [first, unused], (300, 450))
+        self.assertIsNotNone(feature)
+        self.assertEqual([source.name for source in feature.sources], ["NASA"])
+        second_response = json.loads(response)
+        for paragraph in second_response["paragraphs"]:
+            paragraph["source_ids"] = [2]
+        with patch.dict(os.environ, env), \
+             patch("signal_matin.synthesis._chat", return_value=json.dumps(second_response)):
+            second_feature = compose_feature("Sciences & Curiosités", "lecture", [first, unused], (300, 450))
+        self.assertEqual([source.name for source in second_feature.sources], ["Autre média"])
+        self.assertTrue(all(paragraph.source_ids == [1] for paragraph in second_feature.paragraphs))
+        # La liste HTML est celle utilisée par le PDF.
+        from signal_matin.renderer import _feature_blocks
+        html = _feature_blocks(feature)
+        self.assertIn("Une découverte vérifiée", html)
+        self.assertIn("01/10/2026", html)
+        self.assertIn('href="https://nasa.gov/actualite"', html)
+        self.assertNotIn("Contexte non utilisé", html)
+        with patch("signal_matin.connectors.rss._payload", side_effect=OSError("hors ligne")), \
+             patch("signal_matin.editorial.llm_configured", return_value=False):
+            edition = build_live(self.config, now=self.now)
+        edition = edition.model_copy(update={"personal_features": [feature]})
+        with tempfile.TemporaryDirectory() as temp:
+            reader = PdfReader(str(generer_pdf(edition, Path(temp) / "sources.pdf")))
+            pdf_text = " ".join(page.extract_text() or "" for page in reader.pages)
+            urls = [str(annotation.get_object().get("/A", {}).get("/URI", ""))
+                    for page in reader.pages for annotation in page.get("/Annots", [])]
+        self.assertIn("Une découverte vérifiée", pdf_text)
+        self.assertIn("01/10/2026", pdf_text)
+        self.assertIn("https://nasa.gov/actualite", urls)
+        self.assertNotIn("Contexte non utilisé", pdf_text)
 
     def test_no_sources_never_invents_articles(self):
         with patch("signal_matin.connectors.rss._payload", side_effect=OSError("hors ligne")), \

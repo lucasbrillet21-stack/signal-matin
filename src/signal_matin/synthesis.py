@@ -60,6 +60,7 @@ def compose_feature(
         return None
     evidence = "\n\n".join(
         f"SOURCE {index}: {material.source.name} — {material.title}\n"
+        f"DATE: {material.source.published_at.date().isoformat() if material.source.published_at else 'non indiquée'}\n"
         f"URL: {material.source.url}\nTEXTE: {material.text}"
         for index, material in enumerate(materials[:5], 1)
     )
@@ -86,10 +87,15 @@ def compose_feature(
         if not part.source_ids or any(i < 1 or i > len(materials) for i in part.source_ids):
             logger.warning("%s : réponse IA rejetée, référence de source absente ou invalide", category)
             return None
+    used = sorted({index for paragraph in paragraphs for index in paragraph.source_ids})
+    remap = {old: new for new, old in enumerate(used, 1)}
+    paragraphs = [paragraph.model_copy(update={"source_ids": [remap[index] for index in paragraph.source_ids]})
+                  for paragraph in paragraphs]
+    cited_materials = [materials[index - 1] for index in used]
     article = FeatureArticle(
         category=category, title=data["title"], tier=tier, paragraphs=paragraphs,
-        sources=[material.source for material in materials],
-        attribution=" ".join(dict.fromkeys(material.license_note for material in materials
+        sources=[material.source for material in cited_materials],
+        attribution=" ".join(dict.fromkeys(material.license_note for material in cited_materials
                                             if material.license_note)),
     )
     if article.word_count() > upper:

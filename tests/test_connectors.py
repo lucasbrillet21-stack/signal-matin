@@ -68,3 +68,19 @@ def test_article_material_uses_rich_rss_when_page_is_disallowed(monkeypatch):
     material = article_material(item)
     assert len(material.text) > 900
     assert str(material.source.url) == "https://example.org/a"
+
+
+def test_generic_feed_only_keeps_items_matching_category_keywords(monkeypatch):
+    payload = b"""<rss><channel>
+      <item><title>Earth geology survey</title><link>https://example.org/earth</link>
+        <description>Researchers study rocks.</description>
+        <pubDate>Sat, 26 Sep 2026 06:00:00 +0000</pubDate></item>
+      <item><title>New art exhibition</title><link>https://example.org/art</link>
+        <description>A museum opens an exhibition.</description>
+        <pubDate>Sat, 26 Sep 2026 06:00:00 +0000</pubDate></item>
+    </channel></rss>"""
+    monkeypatch.setattr("signal_matin.connectors.rss._payload", lambda _url: payload)
+    items, _ = collect_rss([{"name": "Generic", "category": "Culture",
+                             "url": "https://example.org/feed", "include_any": ["art", "museum"]}],
+                           dt.datetime(2026, 9, 26, 8, tzinfo=dt.timezone.utc))
+    assert [item.title for item in items] == ["New art exhibition"]

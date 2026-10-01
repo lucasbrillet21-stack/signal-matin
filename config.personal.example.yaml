@@ -7,47 +7,45 @@ paper:
   subtitle: "Journal personnel"
   motto: "Voir clair avant de voir l'écran."
 news:
-  limit: 18
+  limit: 30
   max_age_hours: 48
   feeds:
-    - {name: "Le Monde", category: "International", url: "https://www.lemonde.fr/international/rss_full.xml"}
-    - {name: "Euronews", category: "International", url: "https://fr.euronews.com/rss?format=mrss&level=theme&name=news"}
-    - {name: "Le Monde", category: "Géopolitique", url: "https://www.lemonde.fr/europe/rss_full.xml"}
-    - {name: "Euronews", category: "Géopolitique", url: "https://fr.euronews.com/rss?format=mrss&level=vertical&name=my-europe"}
+    - {name: "Euronews", category: "International & Géopolitique", url: "https://fr.euronews.com/rss?format=mrss&level=theme&name=news"}
+    - {name: "Euronews", category: "International & Géopolitique", url: "https://fr.euronews.com/rss?format=mrss&level=vertical&name=my-europe"}
+    - {name: "Le Monde", category: "International & Géopolitique", url: "https://www.lemonde.fr/international/rss_full.xml"}
+    - {name: "Le Monde", category: "International & Géopolitique", url: "https://www.lemonde.fr/europe/rss_full.xml"}
     - {name: "Le Monde", category: "Économie", url: "https://www.lemonde.fr/economie/rss_full.xml"}
-    - {name: "Le Monde", category: "Sciences", url: "https://www.lemonde.fr/sciences/rss_full.xml"}
+    - {name: "NASA", category: "Sciences & Curiosités", url: "https://www.nasa.gov/feed/"}
+    - {name: "Smithsonian", category: "Sciences & Curiosités", url: "https://www.smithsonianmag.com/rss/latest_articles/", include_any: ["science", "scientist", "research", "discovery", "space", "planet", "archaeology", "astronomy", "technology"]}
+    - {name: "NASA Technology", category: "Ingénierie", url: "https://www.nasa.gov/technology/feed/", include_any: ["technology", "engineering", "robotics", "aircraft", "spacecraft", "propulsion", "manufacturing", "computing", "sensor", "communications"]}
+    - {name: "Cloudflare Engineering", category: "Ingénierie", url: "https://blog.cloudflare.com/tag/engineering/rss"}
+    - {name: "arXiv", category: "Intelligence artificielle", url: "https://rss.arxiv.org/rss/cs.AI"}
+    - {name: "Cloudflare AI", category: "Intelligence artificielle", url: "https://blog.cloudflare.com/tag/artificial-intelligence/rss"}
+    - {name: "GitHub Blog", category: "Intelligence artificielle", url: "https://github.blog/feed/", include_any: ["artificial intelligence", "ai", "machine learning", "llm", "model"]}
     - {name: "Le Monde", category: "Intelligence artificielle", url: "https://www.lemonde.fr/intelligence-artificielle/rss_full.xml"}
-    - {name: "Le Monde", category: "Informatique", url: "https://www.lemonde.fr/pixels/rss_full.xml"}
-    - {name: "Le Monde", category: "Ingénierie", url: "https://www.lemonde.fr/technologies/rss_full.xml"}
-    - {name: "Le Monde", category: "Philosophie", url: "https://www.lemonde.fr/le-monde-de-la-philosophie/rss_full.xml"}
-    - {name: "Le Monde", category: "Littérature", url: "https://www.lemonde.fr/livres/rss_full.xml"}
-    - {name: "Le Monde", category: "Histoire", url: "https://www.lemonde.fr/histoire/rss_full.xml"}
-    - {name: "Le Monde", category: "Musique", url: "https://www.lemonde.fr/musiques/rss_full.xml"}
-    - {name: "Le Monde", category: "Culture", url: "https://www.lemonde.fr/culture/rss_full.xml"}
+    - {name: "GitHub Blog", category: "Informatique", url: "https://github.blog/feed/", include_any: ["software", "developer", "code", "repository", "security", "open source", "engineering", "programming"]}
+    - {name: "Cloudflare Engineering", category: "Informatique", url: "https://blog.cloudflare.com/tag/engineering/rss"}
+    - {name: "arXiv", category: "Informatique", url: "https://rss.arxiv.org/rss/cs.AI"}
+    - {name: "Smithsonian", category: "Histoire", url: "https://www.smithsonianmag.com/rss/latest_articles/", include_any: ["history", "historic", "archaeology", "ancient", "century", "heritage"]}
+    - {name: "UNESCO", category: "Histoire", url: "https://whc.unesco.org/en/news/rss/"}
+    - {name: "Smithsonian", category: "Culture", url: "https://www.smithsonianmag.com/rss/latest_articles/", include_any: ["art", "culture", "museum", "music", "film", "literature", "artist", "exhibition"]}
+    - {name: "UNESCO", category: "Culture", url: "https://whc.unesco.org/en/news/rss/"}
 synthesis:
   enabled: true
   # Les articles longs exigent l'API configurée dans .env ou les secrets GitHub.
 editorial:
   timezone: "Australia/Sydney"
   rotation:
-    monday: ["International", "Géopolitique", "Économie"]
-    tuesday: ["Sciences", "Ingénierie", "Intelligence artificielle"]
+    monday: ["International & Géopolitique", "Économie", "Sciences & Curiosités"]
+    tuesday: ["Sciences & Curiosités", "Ingénierie", "Intelligence artificielle"]
     wednesday: ["Philosophie", "Littérature", "Histoire"]
     thursday: ["Informatique", "Intelligence artificielle", "Économie"]
     friday: ["Musique", "Culture", "Littérature"]
-    saturday: ["Histoire", "Sciences", "Curiosités"]
-    sunday: ["Géopolitique", "Philosophie", "Culture"]
+    saturday: ["Histoire", "Sciences & Curiosités", "Culture"]
+    sunday: ["International & Géopolitique", "Philosophie", "Culture"]
   targets:
     dossier: [700, 900]
     article: [450, 600]
     lecture: [300, 450]
-  # Source de contexte public avec attribution ; sujet tournant par catégorie.
-  evergreen:
-    Philosophie: ["Blaise Pascal", "Albert Camus", "Friedrich Nietzsche"]
-    Littérature: ["Franz Kafka", "Fiodor Dostoïevski", "Albert Camus"]
-    Histoire: ["Révolution industrielle", "Commune de Paris", "Imprimerie"]
-    Musique: ["Post-punk", "Madchester", "Punk rock"]
-    Culture: ["Surréalisme", "Dadaïsme", "Cinéma expressionniste allemand"]
-    Curiosités: ["Machine d'Anticythère", "Manuscrit de Voynich", "Paradoxe de Fermi"]
 interests:
   music_keywords: ["rock", "punk", "post-punk", "madchester", "indépendant", "indie"]
