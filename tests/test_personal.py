@@ -1,9 +1,11 @@
 """Rotation, rédaction et pagination sans réseau ni courrier sortant."""
 import datetime as dt
+import io
 import json
 import os
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,14 +14,14 @@ from pypdf import PdfReader
 from scripts.should_run_sydney import should_run
 from signal_matin.config import load_config
 from signal_matin.connectors.rss import collect_rss
-from signal_matin.editorial import categories_for_date, local_date
-from signal_matin.models import ArticleParagraph, FeatureArticle, SourceRef
+from signal_matin.editorial import categories_for_date, local_date, write_features
+from signal_matin.models import ArticleParagraph, FeatureArticle, NewsItem, SourceRef
 from signal_matin.pdf import generer_pdf, inspecter_html
 from signal_matin.pipeline import build_live
 from signal_matin.renderer import render_html
 from signal_matin.source_material import Material
 from signal_matin.source_material import _ArticleParser, wikipedia_material
-from signal_matin.synthesis import compose_feature
+from signal_matin.synthesis import _chat, compose_feature
 from signal_matin.thought import thought_for_date
 
 
@@ -135,15 +137,91 @@ class PersonalTests(unittest.TestCase):
         env = {"SIGNAL_MATIN_LLM_URL": "https://example.org/chat",
                "SIGNAL_MATIN_LLM_MODEL": "test", "SIGNAL_MATIN_LLM_API_KEY": "test"}
         invalid = json.dumps({"title": "Sujet", "paragraphs": [
-            {"kind": "facts", "text": "Texte sans référence", "source_ids": []},
-            {"kind": "limits", "text": "Limite", "source_ids": [1]},
+            {"kind": kind, "text": "Texte sans référence", "source_ids": [] if kind == "facts" else [1]}
+            for kind in ("facts", "context", "mechanisms", "analysis", "consequences", "limits")
         ]})
-        with patch.dict(os.environ, env), patch("signal_matin.synthesis._chat", return_value=invalid):
+        with patch.dict(os.environ, env), patch("signal_matin.synthesis._chat", return_value=invalid), \
+             self.assertLogs("signal_matin.synthesis", level="WARNING") as logs:
             self.assertIsNone(compose_feature("Sciences", "dossier", [material], (700, 900)))
+        self.assertIn("référence de source absente", " ".join(logs.output))
+
+    def test_llm_settings_are_used_in_chat_request(self):
+        env = {"SIGNAL_MATIN_LLM_URL": "https://example.org/v1/chat/completions",
+               "SIGNAL_MATIN_LLM_MODEL": "test-model", "SIGNAL_MATIN_LLM_API_KEY": "dummy-key"}
+
+        def respond(request, timeout):
+            self.assertEqual(request.full_url, env["SIGNAL_MATIN_LLM_URL"])
+            self.assertEqual(request.get_header("Authorization"), "Bearer dummy-key")
+            self.assertEqual(json.loads(request.data), {
+                "model": "test-model", "temperature": 0,
+                "messages": [{"role": "user", "content": "test"}],
+            })
+            self.assertEqual(timeout, 90)
+            return io.BytesIO(b'{"choices":[{"message":{"content":"OK"}}]}')
+
+        with patch.dict(os.environ, env), \
+             patch("signal_matin.synthesis.urllib.request.urlopen", side_effect=respond):
+            self.assertEqual(_chat([{"role": "user", "content": "test"}]), "OK")
+
+    def test_client_challenge_prevents_ai_call_and_explains_each_category(self):
+        selected = categories_for_date(self.config, dt.date(2026, 10, 1))
+        items = [NewsItem(title="Sujet", category=category, summary="Résumé RSS bref.",
+                          source=SourceRef(name="Source", url="https://example.org/article"))
+                 for category in selected]
+        env = {"SIGNAL_MATIN_LLM_URL": "https://example.org/v1/chat/completions",
+               "SIGNAL_MATIN_LLM_MODEL": "test-model", "SIGNAL_MATIN_LLM_API_KEY": "dummy-key"}
+        with patch.dict(os.environ, env), \
+             patch("signal_matin.source_material._robots_allow", return_value=True), \
+             patch("signal_matin.source_material._get",
+                   return_value="<html><title>Client Challenge</title></html>"), \
+             patch("signal_matin.editorial.compose_feature") as compose, \
+             self.assertLogs("signal_matin", level="WARNING") as logs:
+            self.assertEqual(write_features(self.config, dt.date(2026, 10, 1), selected, items), [])
+        compose.assert_not_called()
+        self.assertEqual(sum("aucun appel IA" in line for line in logs.output), 3)
+        self.assertEqual(sum("page de vérification" in line for line in logs.output), 3)
+
+    def test_ai_http_error_reports_status_without_secret(self):
+        source = SourceRef(name="Source", url="https://example.org/article")
+        item = NewsItem(title="Sujet", category="Informatique", summary="Résumé", source=source)
+        material = Material(source, "Sujet", "Texte documenté. " * 100)
+        env = {"SIGNAL_MATIN_LLM_URL": "https://example.org/v1/chat/completions",
+               "SIGNAL_MATIN_LLM_MODEL": "test-model", "SIGNAL_MATIN_LLM_API_KEY": "dummy-key"}
+        error = urllib.error.HTTPError(env["SIGNAL_MATIN_LLM_URL"], 401, "Unauthorized",
+                                       {"x-request-id": "req-test"}, None)
+        with patch.dict(os.environ, env), \
+             patch("signal_matin.editorial.article_material", return_value=material), \
+             patch("signal_matin.editorial.compose_feature", side_effect=error), \
+             self.assertLogs("signal_matin.editorial", level="WARNING") as logs:
+            self.assertEqual(write_features(self.config, dt.date(2026, 10, 1),
+                                            ["Informatique"], [item]), [])
+        self.assertIn("HTTP 401, request_id=req-test", " ".join(logs.output))
+        self.assertNotIn("dummy-key", " ".join(logs.output))
+
+    def test_selected_source_is_not_counted_twice(self):
+        source = SourceRef(name="Source", url="https://example.org/article")
+        first = NewsItem(title="Nouvelles puces informatiques", category="Informatique",
+                         summary="Bref.", source=source)
+        chosen = NewsItem(title="Nouvelles puces informatiques pour ordinateurs",
+                          category="Informatique", summary="Détail. " * 35, source=source)
+        env = {"SIGNAL_MATIN_LLM_URL": "https://example.org/v1/chat/completions",
+               "SIGNAL_MATIN_LLM_MODEL": "test-model", "SIGNAL_MATIN_LLM_API_KEY": "dummy-key"}
+
+        def material(item):
+            return Material(item.source, item.title, "Texte documenté. " * 100)
+
+        with patch.dict(os.environ, env), \
+             patch("signal_matin.editorial.article_material", side_effect=material) as extract, \
+             patch("signal_matin.editorial.compose_feature", return_value=None):
+            write_features(self.config, dt.date(2026, 10, 1), ["Informatique"],
+                           [first, chosen])
+        self.assertEqual([call.args[0] for call in extract.call_args_list], [chosen, first])
 
     def test_no_sources_never_invents_articles(self):
-        with patch("signal_matin.connectors.rss._payload", side_effect=OSError("hors ligne")):
+        with patch("signal_matin.connectors.rss._payload", side_effect=OSError("hors ligne")), \
+             self.assertLogs("signal_matin.connectors.rss", level="WARNING") as logs:
             edition = build_live(self.config, now=self.now)
+        self.assertIn("flux RSS impossible (OSError", " ".join(logs.output))
         self.assertEqual(edition.personal_features, [])
         self.assertIn("Rubriques sans article suffisamment documenté", render_html(edition))
         self.assertNotIn("EDITION DE DEMONSTRATION", render_html(edition))

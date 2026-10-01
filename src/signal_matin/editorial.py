@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import re
+import urllib.error
 from zoneinfo import ZoneInfo
 
 from .config import setting
@@ -13,6 +15,7 @@ from .synthesis import compose_feature, llm_configured
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 TIERS = ("dossier", "article", "lecture")
 DEFAULT_TARGETS = {"dossier": (700, 900), "article": (450, 600), "lecture": (300, 450)}
+logger = logging.getLogger(__name__)
 
 
 def local_date(config: dict, now: dt.datetime) -> dt.date:
@@ -69,6 +72,7 @@ def write_features(
     config: dict, date: dt.date, selected: list[str], items: list[NewsItem],
 ) -> list[FeatureArticle]:
     if not bool(setting(config, "synthesis.enabled", False)) or not llm_configured():
+        logger.warning("Rédaction IA désactivée ou paramètres IA incomplets ; aucun appel IA")
         return []
     features: list[FeatureArticle] = []
     for category in selected:
@@ -87,7 +91,7 @@ def write_features(
                 return 5 * corroboration + 2 * interest + min(len(item.summary), 300) / 300
 
             first = max(candidates, key=score)
-            related = [item for item in candidates[1:] if _related(first, item)]
+            related = [item for item in candidates if item is not first and _related(first, item)]
             for item in [first, *related[:2]]:
                 materials.append(article_material(item))
         if sum(len(material.text) for material in materials) < 900:
@@ -95,10 +99,20 @@ def write_features(
             if evergreen:
                 materials = [evergreen]
         if sum(len(material.text) for material in materials) < 900:
+            logger.warning("%s : %d source(s), %d caractères exploitables ; minimum 900, aucun appel IA",
+                           category, len(materials), sum(len(material.text) for material in materials))
             continue
         try:
-            feature = compose_feature(category, tier, materials, targets(config, tier))
-        except (OSError, ValueError, KeyError, IndexError, TypeError):
+            target = targets(config, tier)
+            logger.warning("%s : appel IA avec %d source(s), %d caractères",
+                           category, len(materials), sum(len(material.text) for material in materials))
+            feature = compose_feature(category, tier, materials, target)
+        except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
+            if isinstance(error, urllib.error.HTTPError):
+                logger.error("%s : appel IA refusé (HTTP %d, request_id=%s)",
+                             category, error.code, error.headers.get("x-request-id", "absent"))
+            else:
+                logger.error("%s : rédaction IA impossible (%s)", category, type(error).__name__)
             feature = None
         if feature:
             features.append(feature)

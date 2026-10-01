@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import html
+import logging
 import math
 import re
 import urllib.request
@@ -11,6 +12,8 @@ import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
 from ..models import DataSourceStatus, DataState, NewsItem, SourceRef
+
+logger = logging.getLogger(__name__)
 
 
 def _tag(element: ET.Element) -> str:
@@ -133,7 +136,9 @@ def collect_rss(
                     break
             if bucket:
                 buckets.append(bucket)
-        except Exception:
+        except Exception as error:
+            logger.warning("%s : flux RSS impossible (%s, HTTP %s)",
+                           name, type(error).__name__, getattr(error, "code", "—"))
             errors += 1
     items: list[NewsItem] = []
     while len(items) < limit and any(buckets):

@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.request
 
 from .models import ArticleParagraph, FeatureArticle
 from .source_material import Material
+
+logger = logging.getLogger(__name__)
 
 
 def llm_configured() -> bool:
@@ -70,15 +73,18 @@ def compose_feature(
         )},
     ])
     if raw == "INSUFFISANT":
+        logger.warning("%s : l'IA signale des sources insuffisantes", category)
         return None
     raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     data = json.loads(raw)
     paragraphs = [ArticleParagraph.model_validate(part) for part in data["paragraphs"]]
     required = {"facts", "context", "mechanisms", "analysis", "consequences", "limits"}
     if not required.issubset({part.kind for part in paragraphs}):
+        logger.warning("%s : réponse IA rejetée, sections obligatoires manquantes", category)
         return None
     for part in paragraphs:
         if not part.source_ids or any(i < 1 or i > len(materials) for i in part.source_ids):
+            logger.warning("%s : réponse IA rejetée, référence de source absente ou invalide", category)
             return None
     article = FeatureArticle(
         category=category, title=data["title"], tier=tier, paragraphs=paragraphs,
@@ -87,8 +93,12 @@ def compose_feature(
                                             if material.license_note)),
     )
     if article.word_count() > upper:
+        logger.warning("%s : réponse IA rejetée, %d mots dépassent le maximum %d",
+                       category, article.word_count(), upper)
         return None
     if article.word_count() < max(180, lower // 2):
+        logger.warning("%s : réponse IA rejetée, %d mots sous le minimum de sécurité",
+                       category, article.word_count())
         return None
     if article.word_count() < lower:
         article = article.model_copy(update={"shortfall": True})

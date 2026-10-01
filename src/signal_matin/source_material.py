@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import re
 import urllib.parse
 import urllib.request
@@ -13,6 +14,7 @@ from urllib.robotparser import RobotFileParser
 from .models import NewsItem, SourceRef
 
 USER_AGENT = "Signal-Matin/1.1 (https://github.com/sosoj92/signal-matin)"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -77,12 +79,20 @@ def article_material(item: NewsItem) -> Material:
         try:
             if _robots_allow(url):
                 parser = _ArticleParser()
-                parser.feed(_get(url))
+                page = _get(url)
+                parser.feed(page)
                 body = "\n".join(parser.paragraphs)
                 if len(body) >= 400:
                     text = body[:12_000]
-        except (OSError, ValueError, UnicodeError):
-            pass
+                elif re.search(r"<title[^>]*>\s*Client Challenge\s*</title>", page, re.I):
+                    logger.warning("%s : page de vérification reçue à la place de l'article", item.source.name)
+                else:
+                    logger.warning("%s : corps d'article trop court (%d caractères)", item.source.name, len(body))
+            else:
+                logger.warning("%s : lecture de l'article interdite par robots.txt", item.source.name)
+        except (OSError, ValueError, UnicodeError) as error:
+            logger.warning("%s : lecture de l'article impossible (%s, HTTP %s)",
+                           item.source.name, type(error).__name__, getattr(error, "code", "—"))
     return Material(source=item.source, title=item.title, text=text)
 
 
