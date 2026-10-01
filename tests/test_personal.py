@@ -335,7 +335,8 @@ class PersonalTests(unittest.TestCase):
             edition = build_live(self.config, now=self.now)
         self.assertIn("flux RSS impossible (OSError", " ".join(logs.output))
         self.assertEqual(edition.personal_features, [])
-        self.assertIn("Rubriques sans article suffisamment documenté", render_html(edition))
+        self.assertIn("Rubriques sans article", render_html(edition))
+        self.assertIn("erreur de rédaction/API", render_html(edition))
         self.assertNotIn("EDITION DE DEMONSTRATION", render_html(edition))
 
     def test_rss_without_writer_is_not_printed_as_long_article(self):

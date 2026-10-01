@@ -1069,7 +1069,14 @@ def _feature_blocks(feature: FeatureArticle) -> str:
         body = (f'<strong>{labels[paragraph.kind]} — </strong>{_e(paragraph.text)} '
                 f'<sup>{_e(refs)}</sup>')
         if index == 0:
-            note = " · Format abrégé : matière disponible limitée" if feature.shortfall else ""
+            reasons = []
+            if "documentation_limited" in feature.shortfall_reasons:
+                reasons.append("documentation limitée")
+            if "article_short" in feature.shortfall_reasons:
+                reasons.append("article plus court que la cible éditoriale")
+            if feature.shortfall and not reasons:
+                reasons.append("format abrégé : motif non enregistré")
+            note = " · " + " ; ".join(reasons) if reasons else ""
             blocks.append(
                 f'<div class="personal-feature-head"><small>{_e(feature.category)} · '
                 f'{tier_label}{note}</small><h2>{_e(feature.title)}</h2><p>{body}</p>'
@@ -1104,10 +1111,16 @@ def _render_personal(edition: MorningEdition, css: str, pagination: str) -> str:
     absent = [category for category in edition.expected_categories
               if category not in {feature.category for feature in features}]
     if absent:
-        notice = ("Rubriques sans article suffisamment documenté : "
-                  + ", ".join(absent) + ".")
-        if not features:
-            notice += " Vérifie l'accès aux sources et la configuration de l'API de rédaction."
+        labels = {
+            "documentation_insufficient": "documentation insuffisante",
+            "tavily_insufficient": "recherche Tavily insuffisante",
+            "writing_error": "erreur de rédaction/API",
+            "article_rejected": "article rejeté après validation",
+        }
+        diagnoses = {row.category: row for row in edition.personal_diagnostics}
+        notice = "Rubriques sans article : " + " ; ".join(
+            f"{category} — {labels.get(diagnoses[category].result, 'cause non enregistrée') if category in diagnoses else 'cause non enregistrée'}"
+            for category in absent) + "."
         pages[0] = pages[0].replace(
             "</main>", f'<p class="personal-absence">{_e(notice)}</p></main>', 1)
     return f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">

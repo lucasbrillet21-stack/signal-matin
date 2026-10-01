@@ -5,11 +5,50 @@ import json
 import logging
 import os
 import urllib.request
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Iterator
 
 from .models import ArticleParagraph, FeatureArticle
 from .source_material import Material
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ComposeTrace:
+    response_received: bool = False
+    word_count: int = 0
+    validation: str = "non démarrée"
+    reason: str = ""
+
+
+_trace: ContextVar[ComposeTrace | None] = ContextVar("compose_trace", default=None)
+
+
+@contextmanager
+def capture_compose(trace: ComposeTrace) -> Iterator[None]:
+    token = _trace.set(trace)
+    try:
+        yield
+    finally:
+        _trace.reset(token)
+
+
+def _mark(*, received: bool | None = None, words: int | None = None,
+          validation: str | None = None, reason: str | None = None) -> None:
+    trace = _trace.get()
+    if trace is None:
+        return
+    if received is not None:
+        trace.response_received = received
+    if words is not None:
+        trace.word_count = words
+    if validation is not None:
+        trace.validation = validation
+    if reason is not None:
+        trace.reason = reason
 
 
 def llm_configured() -> bool:
@@ -33,6 +72,7 @@ def _chat(messages: list[dict[str, str]]) -> str:
                  "Content-Type": "application/json"},
     )
     with urllib.request.urlopen(request, timeout=90) as response:
+        _mark(received=True)
         return json.load(response)["choices"][0]["message"]["content"].strip()
 
 
@@ -60,6 +100,7 @@ def compose_feature(
 ) -> FeatureArticle | None:
     """Rédige depuis des matériaux réels ; toute sortie est validée avant publication."""
     if not llm_configured() or not materials:
+        _mark(validation="REJET", reason="api_non_configurée_ou_aucune_source")
         return None
     evidence = "\n\n".join(
         f"SOURCE {index}: {material.source.name} — {material.title}\n"
@@ -76,18 +117,27 @@ def compose_feature(
             "pour atteindre ce nombre.\n\n" + evidence
         )},
     ])
+    _mark(received=True)
     if raw == "INSUFFISANT":
+        _mark(validation="REJET", reason="llm_insufficient")
         logger.warning("%s : l'IA signale des sources insuffisantes", category)
         return None
     raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    data = json.loads(raw)
-    paragraphs = [ArticleParagraph.model_validate(part) for part in data["paragraphs"]]
+    try:
+        data = json.loads(raw)
+        paragraphs = [ArticleParagraph.model_validate(part) for part in data["paragraphs"]]
+    except (ValueError, KeyError, TypeError, IndexError):
+        _mark(validation="REJET", reason="invalid_json_or_structure")
+        raise
+    _mark(words=sum(len(part.text.split()) for part in paragraphs))
     required = {"facts", "context", "mechanisms", "analysis", "consequences", "limits"}
     if not required.issubset({part.kind for part in paragraphs}):
+        _mark(validation="REJET", reason="missing_sections")
         logger.warning("%s : réponse IA rejetée, sections obligatoires manquantes", category)
         return None
     for part in paragraphs:
         if not part.source_ids or any(i < 1 or i > len(materials) for i in part.source_ids):
+            _mark(validation="REJET", reason="invalid_source_ids")
             logger.warning("%s : réponse IA rejetée, référence de source absente ou invalide", category)
             return None
     used = sorted({index for paragraph in paragraphs for index in paragraph.source_ids})
@@ -95,20 +145,29 @@ def compose_feature(
     paragraphs = [paragraph.model_copy(update={"source_ids": [remap[index] for index in paragraph.source_ids]})
                   for paragraph in paragraphs]
     cited_materials = [materials[index - 1] for index in used]
-    article = FeatureArticle(
-        category=category, title=data["title"], tier=tier, paragraphs=paragraphs,
-        sources=[material.source for material in cited_materials],
-        attribution=" ".join(dict.fromkeys(material.license_note for material in cited_materials
-                                            if material.license_note)),
-    )
+    try:
+        article = FeatureArticle(
+            category=category, title=data["title"], tier=tier, paragraphs=paragraphs,
+            sources=[material.source for material in cited_materials],
+            attribution=" ".join(dict.fromkeys(material.license_note for material in cited_materials
+                                                if material.license_note)),
+        )
+    except (ValueError, KeyError, TypeError, IndexError):
+        _mark(validation="REJET", reason="invalid_article_structure")
+        raise
+    _mark(words=article.word_count())
     if article.word_count() > upper:
+        _mark(validation="REJET", reason="above_word_limit")
         logger.warning("%s : réponse IA rejetée, %d mots dépassent le maximum %d",
                        category, article.word_count(), upper)
         return None
     if article.word_count() < max(180, lower // 2):
+        _mark(validation="REJET", reason="below_safety_minimum")
         logger.warning("%s : réponse IA rejetée, %d mots sous le minimum de sécurité",
                        category, article.word_count())
         return None
     if article.word_count() < lower:
-        article = article.model_copy(update={"shortfall": True})
+        article = article.model_copy(update={"shortfall": True,
+                                             "shortfall_reasons": ["article_short"]})
+    _mark(validation="OK", reason="article_short" if article.word_count() < lower else "")
     return article

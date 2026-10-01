@@ -161,10 +161,25 @@ class FeatureArticle(Modele):
     paragraphs: list[ArticleParagraph] = Field(default_factory=list, max_length=18)
     sources: list[SourceRef] = Field(default_factory=list, max_length=8)
     shortfall: bool = False
+    shortfall_reasons: list[Literal["documentation_limited", "article_short"]] = Field(default_factory=list)
     attribution: str = Field(default="", max_length=240)
 
     def word_count(self) -> int:
         return sum(len(paragraph.text.split()) for paragraph in self.paragraphs)
+
+
+class RubricDiagnostic(Modele):
+    category: str = Field(min_length=1, max_length=80)
+    candidates_tried: int = Field(default=0, ge=0)
+    tavily_searches: int = Field(default=0, ge=0)
+    tavily_credits: int | None = Field(default=None, ge=0)
+    material_chars: int = Field(default=0, ge=0)
+    source_count: int = Field(default=0, ge=0)
+    domain_count: int = Field(default=0, ge=0)
+    llm_called: bool = False
+    result: Literal["published", "documentation_insufficient", "tavily_insufficient",
+                    "writing_error", "article_rejected"] = "documentation_insufficient"
+    reason: str = Field(default="", max_length=120)
 
 
 class WordOfTheDay(Modele):
@@ -246,6 +261,7 @@ class MorningEdition(Modele):
     personal_articles: list[NewsItem] = Field(default_factory=list, max_length=40)
     expected_categories: list[str] = Field(default_factory=list, max_length=24)
     personal_features: list[FeatureArticle] = Field(default_factory=list, max_length=3)
+    personal_diagnostics: list[RubricDiagnostic] = Field(default_factory=list, max_length=24)
 
     @field_validator("generated_at")
     @classmethod

@@ -9,20 +9,48 @@ import unicodedata
 import urllib.error
 from dataclasses import dataclass
 from typing import Callable
-from urllib.parse import parse_qsl, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from .config import setting
-from .connectors.tavily import SearchHit, TavilyError, search as tavily_search
-from .models import FeatureArticle, NewsItem, SourceRef
+from .connectors.tavily import (SearchHit, SearchTrace, TavilyError, capture_search,
+                                search as tavily_search)
+from .models import FeatureArticle, NewsItem, RubricDiagnostic, SourceRef
 from .source_material import Material, article_material, wikipedia_material
-from .synthesis import compose_feature, llm_configured
+from .synthesis import ComposeTrace, capture_compose, compose_feature, llm_configured
 
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 TIERS = ("dossier", "article", "lecture")
 DEFAULT_TARGETS = {"dossier": (700, 900), "article": (450, 600), "lecture": (300, 450)}
 logger = logging.getLogger(__name__)
 EVERGREEN_CATEGORIES = {"Philosophie", "Littérature", "Histoire", "Culture", "Musique"}
+
+
+def _safe_log(value: object, limit: int = 240) -> str:
+    result = " ".join(str(value or "").split())
+    for key in ("TAVILY_API_KEY", "SIGNAL_MATIN_LLM_API_KEY", "GMAIL_APP_PASSWORD"):
+        secret = os.environ.get(key, "")
+        if secret:
+            result = result.replace(secret, "[SECRET MASQUÉ]")
+    return result[:limit]
+
+
+def _safe_log_url(url: str) -> str:
+    try:
+        parts = urlsplit(url)
+        query = urlencode([(key, value) for key, value in parse_qsl(parts.query)
+                           if not any(word in key.casefold() for word in
+                                      ("token", "secret", "password", "api_key", "auth"))])
+        return _safe_log(urlunsplit((parts.scheme, parts.netloc, parts.path, query, "")), 500)
+    except ValueError:
+        return "[URL invalide]"
+
+
+def _log_search_result(domain: str, title: str, url: str, chars: int,
+                       decision: str, reason: str = "") -> None:
+    logger.info("[Tavily] résultat | domaine=%s | titre=%s | URL=%s | contenu=%d caractères | "
+                "décision=%s | raison=%s", _safe_log(domain, 100), _safe_log(title),
+                _safe_log_url(url), chars, decision, reason or "—")
 
 
 def local_date(config: dict, now: dt.datetime) -> dt.date:
@@ -244,34 +272,46 @@ def _source_priority(hit: SearchHit) -> tuple[int, float]:
 
 
 def filter_tavily_hits(first: NewsItem, current: list[Material], hits: list[SearchHit],
-                       cache: dict[str, Material] | None = None) -> list[Material]:
+                       cache: dict[str, Material] | None = None,
+                       on_decision: Callable[[SearchHit, str, str], None] | None = None) -> list[Material]:
     """Applique le même filtrage de pertinence, de sources et de doublons que l'édition."""
     cache = cache if cache is not None else {}
     for hit in sorted(hits, key=_source_priority):
+        def reject(reason: str) -> None:
+            if on_decision:
+                on_decision(hit, "REJETÉ", reason)
+
         if len(current) >= 5:
-            break
+            reject("dossier_full")
+            continue
         domain = hit.publisher.casefold()
         if any(bad in domain for bad in ("pinterest.", "quora.", "reddit.", "medium.com")):
+            reject("seo_domain")
             continue
         if any(marker in (hit.title + " " + hit.content).casefold() for marker in
                ("client challenge", "subscribe to continue", "enable javascript to continue")):
+            reject("challenge_page")
             continue
         if sum(_publisher_key(str(material.source.url or "")) ==
                _publisher_key(hit.url) for material in current) >= 2:
+            reject("domain_overrepresented")
             continue
         if first.source.published_at and hit.published_at and (
             hit.published_at < first.source.published_at - dt.timedelta(days=14)
         ) and first.category not in EVERGREEN_CATEGORIES:
+            reject("too_old")
             continue
         item = NewsItem(title=hit.title, category=first.category,
                         summary=hit.content[:1600], expanded_summary=hit.content,
                         source=SourceRef(name=hit.publisher, title=hit.title, url=hit.url,
                                          published_at=hit.published_at))
         if not _same_story(first, item):
+            reject("irrelevant")
             continue
         key = _canonical_url(item)
         if key in {_canonical_url(first.model_copy(update={"source": material.source}))
                    for material in current}:
+            reject("duplicate_url")
             continue
         if key not in cache:
             fetched = article_material(item)
@@ -279,15 +319,21 @@ def filter_tavily_hits(first: NewsItem, current: list[Material], hits: list[Sear
                           Material(fetched.source, fetched.title, fetched.text,
                                    fetched.license_note, "tavily"))
         material = cache[key]
-        if len(material.text.strip()) < 100 or any(_near_duplicate(material.text, old.text)
-                                                   for old in current):
+        if len(material.text.strip()) < 100:
+            reject("content_too_short")
+            continue
+        if any(_near_duplicate(material.text, old.text) for old in current):
+            reject("duplicate_content")
             continue
         current.append(material)
+        if on_decision:
+            on_decision(hit, "RETENU", "")
     return current
 
 
 def _tavily_materials(first: NewsItem, current: list[Material], config: dict,
-                      budget: TavilyBudget, cache: dict[str, Material], tier: str) -> list[Material]:
+                      budget: TavilyBudget, cache: dict[str, Material], tier: str,
+                      row: RubricDiagnostic | None = None, candidate_number: int = 0) -> list[Material]:
     if not bool(setting(config, "tavily.enabled", False)):
         return current
     if not os.environ.get("TAVILY_API_KEY", "").strip():
@@ -305,38 +351,117 @@ def _tavily_materials(first: NewsItem, current: list[Material], config: dict,
         if not budget.reserve():
             logger.info("[Tavily] budget épuisé : %d/%d recherches", budget.used, budget.limit)
             break
-        logger.info("[Tavily] recherche %d/%d", budget.used, budget.limit)
+        if row:
+            row.tavily_searches += 1
+        actual_query = query if attempt == 0 else first.title
+        logger.info("[Tavily]\nRubrique : %s\nCandidat : #%d — %s\nRecherche : %d/%d\n"
+                    "Recherche pour ce candidat : %d/%d\nBudget restant : %d\nRequête : \"%s\"",
+                    _safe_log(first.category, 80), candidate_number, _safe_log(first.title),
+                    budget.used, budget.limit, attempt + 1, per_article,
+                    budget.limit - budget.used, _safe_log(actual_query))
+        trace = SearchTrace()
         try:
-            hits = tavily_search(query if attempt == 0 else first.title,
-                                 max_results=max_results,
-                                 recent=first.category not in EVERGREEN_CATEGORIES)
+            with capture_search(trace):
+                hits = tavily_search(actual_query, max_results=max_results,
+                                     recent=first.category not in EVERGREEN_CATEGORIES)
         except TavilyError as error:
             logger.warning("[Tavily] recherche impossible (%s)", error)
             break
-        logger.info("[Tavily] %d résultats", len(hits))
+        if trace.credits is not None:
+            if row:
+                row.tavily_credits = (row.tavily_credits or 0) + trace.credits
+            logger.info("[Tavily] crédits indiqués par l'API : %d", trace.credits)
+        else:
+            logger.info("[Tavily] crédits API non fournis ; recherches effectuées cette édition : %d",
+                        budget.used)
+        logger.info("[Tavily] résultats reçus : %d", trace.raw_count or len(hits))
+        for rejected in trace.rejected:
+            _log_search_result(rejected.domain, rejected.title, rejected.url,
+                               rejected.content_chars, "REJETÉ", rejected.reason)
         before = len(current)
-        filter_tavily_hits(first, current, hits, cache)
-        logger.info("[Tavily] %d résultats retenus", len(current) - before)
+        filter_tavily_hits(first, current, hits, cache,
+                           on_decision=lambda hit, decision, reason: _log_search_result(
+                               hit.publisher, hit.title, hit.url, len(hit.content), decision, reason))
+        logger.info("[Tavily] résultats retenus : %d", len(current) - before)
     return current
+
+
+def _record_material(row: RubricDiagnostic, materials: list[Material]) -> None:
+    row.material_chars = _document_chars(materials)
+    row.source_count = len(materials)
+    row.domain_count = _independent_sources(materials)
+
+
+def _log_dossier(category: str, before: list[Material], after: list[Material],
+                 tier: str, config: dict) -> None:
+    logger.info("[%s] dossier enrichi\nMatière avant : %d caractères\n"
+                "Matière après : %d caractères\nSources avant : %d\nSources après : %d\n"
+                "Domaines indépendants : %d\nObjectif richesse atteint : %s\n"
+                "Seuil rédaction 900 atteint : %s", _safe_log(category, 80),
+                _document_chars(before), _document_chars(after), len(before), len(after),
+                _independent_sources(after), "OUI" if _rich_enough(after, tier, config) else "NON",
+                "OUI" if _document_chars(after) >= 900 else "NON")
+    for index, material in enumerate(after, 1):
+        logger.info("[%d] %s — %s", index,
+                    _safe_log(_publisher_key(str(material.source.url or "")), 100),
+                    _safe_log(material.title))
+
+
+def _log_run_summary(rows: list[RubricDiagnostic], searches: int, limit: int,
+                     articles: int) -> None:
+    logger.info("Résumé du run | Rubrique | candidats essayés | recherches Tavily | "
+                "matière finale | sources | domaines | LLM appelé | résultat")
+    for row in rows:
+        logger.info("Résumé du run | %s | %d | %d | %d | %d | %d | %s | %s%s",
+                    _safe_log(row.category, 80), row.candidates_tried, row.tavily_searches,
+                    row.material_chars, row.source_count, row.domain_count,
+                    "OUI" if row.llm_called else "NON", row.result,
+                    f" ({_safe_log(row.reason, 120)})" if row.reason else "")
+    logger.info("Recherches Tavily totales : %d / %d", searches, limit)
+    logger.info("Articles publiés : %d / 3", articles)
+    known_credits = [row.tavily_credits for row in rows if row.tavily_credits is not None]
+    if known_credits:
+        logger.info("Crédits déclarés dans les réponses Tavily disponibles : %d", sum(known_credits))
+
+
+def _safe_error_description(error: Exception) -> str:
+    if isinstance(error, urllib.error.HTTPError):
+        if error.code in (401, 403):
+            return "authentification ou autorisation refusée"
+        if error.code == 429:
+            return "limite de débit ou quota atteint"
+        if error.code >= 500:
+            return "erreur du serveur de rédaction"
+        return "requête rejetée par l'API de rédaction"
+    if isinstance(error, (OSError, TimeoutError)):
+        return "connexion ou délai de rédaction indisponible"
+    return "réponse de rédaction invalide"
 
 
 def write_features(
     config: dict, date: dt.date, selected: list[str], items: list[NewsItem],
     *, load_category: Callable[[str], list[NewsItem]] | None = None,
     primary: list[str] | None = None,
+    diagnostics: list[RubricDiagnostic] | None = None,
 ) -> list[FeatureArticle]:
+    rows = diagnostics if diagnostics is not None else []
+    budget = TavilyBudget(max(0, int(setting(config, "tavily.max_searches_per_edition", 6) or 0)))
     if not bool(setting(config, "synthesis.enabled", False)) or not llm_configured():
         logger.warning("Rédaction IA désactivée ou paramètres IA incomplets ; aucun appel IA")
+        rows.extend(RubricDiagnostic(category=category, result="writing_error", reason="api_non_configurée")
+                    for category in (primary if primary is not None else selected))
+        _log_run_summary(rows, 0, budget.limit, 0)
         return []
     features: list[FeatureArticle] = []
     used_urls: set[str] = set()
     material_cache: dict[str, Material] = {}
-    budget = TavilyBudget(max(0, int(setting(config, "tavily.max_searches_per_edition", 6) or 0)))
     primary = primary if primary is not None else selected
     for category in selected:
         if len(features) >= 3:
             break
         tier = TIERS[len(features)]
+        row = RubricDiagnostic(category=category)
+        rows.append(row)
         if load_category and category not in primary:
             items.extend(load_category(category))
         candidates = [item for item in items if item.category == category
@@ -374,14 +499,20 @@ def write_features(
                     group.append(material_cache[key])
                     if len(group) >= 3:
                         break
-                logger.info("[%s] sujet détecté: %.100s", category, first.title)
-                logger.info("[%s] matière initiale: %d caractères / %d source(s)",
-                            category, _document_chars(group), len(group))
+                row.candidates_tried += 1
+                logger.info("[%s] candidat #%d\nTitre : %s\nSource de découverte : %s\n"
+                            "Date : %s\nMatière initiale : %d caractères\n"
+                            "Nombre de sources initiales : %d\nNombre de domaines indépendants : %d",
+                            _safe_log(category, 80), row.candidates_tried, _safe_log(first.title),
+                            _safe_log(first.source.name, 120),
+                            first.source.published_at.isoformat() if first.source.published_at else "absente",
+                            _document_chars(group), len(group), _independent_sources(group))
                 if not _rich_enough(group, tier, config) and _discovery_ready(first, config):
                     logger.info("[%s] documentation à enrichir -> recherche Tavily si configurée", category)
-                    group = _tavily_materials(first, group, config, budget, material_cache, tier)
-                    logger.info("[%s] dossier enrichi: %d caractères / %d source(s)",
-                                category, _document_chars(group), len(group))
+                    before = list(group)
+                    group = _tavily_materials(first, group, config, budget, material_cache, tier,
+                                              row, row.candidates_tried)
+                    _log_dossier(category, before, group, tier, config)
                 if _document_chars(group) >= 900:
                     materials = group
                     chosen = first
@@ -392,28 +523,58 @@ def write_features(
             evergreen = _evergreen(config, category, date)
             if evergreen:
                 materials = [evergreen]
+        _record_material(row, materials)
         if _document_chars(materials) < 900:
+            row.result = "tavily_insufficient" if row.tavily_searches else "documentation_insufficient"
+            row.reason = ("moins_de_900_après_recherche" if row.tavily_searches else
+                          "aucun_sujet" if not row.candidates_tried else "moins_de_900_sans_recherche")
             logger.warning("%s : %d source(s), %d caractères exploitables ; minimum 900, aucun appel IA",
                            category, len(materials), _document_chars(materials))
             continue
+        trace = ComposeTrace()
+        feature: FeatureArticle | None = None
         try:
             target = targets(config, tier)
             logger.info("[%s] validation documentaire OK", category)
-            logger.info("[%s] appel GPT-4.1-mini avec %d source(s), %d caractères",
-                        category, len(materials), _document_chars(materials))
-            feature = compose_feature(category, tier, materials, target)
+            logger.info("[%s] appel LLM\nModèle : %s\nNombre de sources : %d\n"
+                        "Nombre de domaines : %d\nCaractères documentaires : %d",
+                        _safe_log(category, 80),
+                        _safe_log(os.environ.get("SIGNAL_MATIN_LLM_MODEL", "non configuré"), 100),
+                        len(materials), _independent_sources(materials), _document_chars(materials))
+            row.llm_called = True
+            with capture_compose(trace):
+                feature = compose_feature(category, tier, materials, target)
         except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
+            row.result = "article_rejected" if trace.validation == "REJET" else "writing_error"
+            row.reason = trace.reason or type(error).__name__
             if isinstance(error, urllib.error.HTTPError):
-                logger.error("%s : appel IA refusé (HTTP %d, request_id=%s)",
-                             category, error.code, error.headers.get("x-request-id", "absent"))
+                logger.error("%s : appel IA refusé (HTTP %d, request_id=%s ; type=%s ; message=%s)",
+                             category, error.code,
+                             _safe_log(error.headers.get("x-request-id", "absent"), 100),
+                             type(error).__name__, _safe_error_description(error))
             else:
-                logger.error("%s : rédaction IA impossible (%s)", category, type(error).__name__)
-            feature = None
+                logger.error("%s : rédaction IA impossible (type=%s ; message=%s)",
+                             category, type(error).__name__, _safe_error_description(error))
+        received = trace.response_received or feature is not None
+        if feature:
+            validation, reason = "OK", trace.reason or "—"
+        else:
+            validation, reason = "REJET", trace.reason or row.reason or "aucun_article_retourné"
+            if row.result not in {"writing_error", "article_rejected"}:
+                row.result = "article_rejected"
+                row.reason = reason
+        logger.info("[%s] réponse reçue : %s | longueur article : %d mots | "
+                    "validation : %s | raison : %s", _safe_log(category, 80),
+                    "OUI" if received else "NON", feature.word_count() if feature else trace.word_count,
+                    validation, _safe_log(reason, 120))
         if feature:
             if _independent_sources(materials) < 2 or (tier == "dossier" and
                     _document_chars(materials) < int(setting(config, "tavily.rich_chars_dossier", 3000) or 3000)):
-                feature = feature.model_copy(update={"shortfall": True})
+                reasons = list(dict.fromkeys([*feature.shortfall_reasons, "documentation_limited"]))
+                feature = feature.model_copy(update={"shortfall": True, "shortfall_reasons": reasons})
             features.append(feature)
+            row.result = "published"
+            row.reason = ",".join(feature.shortfall_reasons)
             logger.info("[%s] article validé", category)
             cited_urls = {str(source.url) for source in feature.sources if source.url}
             used_urls.update(_canonical_url(item) for item in candidates
@@ -421,4 +582,5 @@ def write_features(
             if chosen:
                 used_urls.add(_canonical_url(chosen))
                 used_urls.update(_canonical_url(item) for item in candidates if _related(chosen, item))
+    _log_run_summary(rows, budget.used, budget.limit, len(features))
     return features

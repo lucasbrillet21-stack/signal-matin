@@ -13,7 +13,7 @@ from .daily_learning import construire_apprentissage_du_jour
 from .models import (
     DataSourceStatus, DataState, DigestItem, EditionMeta, Extras, Importance,
     LearningPage, MorningEdition, NewsBundle, NewsItem, PersonalBlock, QuoteBlock,
-    Recommendation, SourceRef,
+    Recommendation, RubricDiagnostic, SourceRef,
 )
 from .normalizer import normaliser_edition
 from .thought import thought_for_date
@@ -202,8 +202,10 @@ def _build_personal(config: dict, now: dt.datetime, mode: str) -> MorningEdition
         fallback_statuses.append(result)
         return found
 
+    diagnostics: list[RubricDiagnostic] = []
     features = write_features(config, date, selected + fallback_categories(config, selected),
-                              items, load_category=load_fallback, primary=selected)
+                              items, load_category=load_fallback, primary=selected,
+                              diagnostics=diagnostics)
     edition = MorningEdition(
         generated_at=now, demo=False, personal_journal=True,
         edition=EditionMeta(
@@ -216,6 +218,7 @@ def _build_personal(config: dict, now: dt.datetime, mode: str) -> MorningEdition
         sources=[status, *fallback_statuses], personal_articles=items[:40],
         expected_categories=selected,
         personal_features=features,
+        personal_diagnostics=diagnostics,
         thought=thought_for_date(date),
         personal=PersonalBlock(greeting="Bonjour. Voici les informations sourcées du jour."),
     )

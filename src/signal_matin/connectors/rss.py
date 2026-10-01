@@ -5,6 +5,7 @@ import datetime as dt
 import html
 import logging
 import math
+import os
 import re
 import urllib.request
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
@@ -14,6 +15,22 @@ from email.utils import parsedate_to_datetime
 from ..models import DataSourceStatus, DataState, NewsItem, SourceRef
 
 logger = logging.getLogger(__name__)
+
+
+class FeedPayload(bytes):
+    def __new__(cls, value: bytes, http_status: int | None):
+        result = super().__new__(cls, value)
+        result.http_status = http_status
+        return result
+
+
+def _safe_log(value: str) -> str:
+    result = " ".join(value.split())
+    for key in ("TAVILY_API_KEY", "SIGNAL_MATIN_LLM_API_KEY", "GMAIL_APP_PASSWORD"):
+        secret = os.environ.get(key, "")
+        if secret:
+            result = result.replace(secret, "[SECRET MASQUÉ]")
+    return result[:240]
 
 
 def _tag(element: ET.Element) -> str:
@@ -74,7 +91,7 @@ def _date(element: ET.Element) -> dt.datetime | None:
 def _payload(url: str) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": "Signal-Matin/1.0"})
     with urllib.request.urlopen(request, timeout=12) as response:
-        return response.read(2_000_000)
+        return FeedPayload(response.read(2_000_000), getattr(response, "status", None))
 
 
 def _canonical(url: str) -> str:
@@ -126,7 +143,14 @@ def collect_rss(
                 )
                 root = ET.fromstring(repaired)
             bucket: list[NewsItem] = []
-            for node in (node for node in root.iter() if _tag(node) in {"item", "entry"}):
+            nodes = [node for node in root.iter() if _tag(node) in {"item", "entry"}]
+            within_window = sum(1 for node in nodes if
+                                (published := _date(node)) is not None and
+                                cutoff <= published <= future_limit)
+            logger.info("[RSS %s / %s] HTTP %s | entrées reçues : %d | fenêtre temporelle : %d",
+                        _safe_log(name), _safe_log(category),
+                        getattr(payload, "http_status", "inconnu"), len(nodes), within_window)
+            for node in nodes:
                 title = _plain(_text(node, {"title"}))
                 link = _link(node)
                 if not link or urlsplit(link).scheme not in {"http", "https"}:
@@ -154,6 +178,13 @@ def collect_rss(
                     expanded_summary=rich_text[:12_000],
                     source=SourceRef(name=name, title=title, url=link, published_at=published),
                 ))
+                age = (now - published).total_seconds() / 3600 if published else None
+                logger.info("[RSS %s / %s] candidat retenu | titre=%s | date=%s | âge=%s h | "
+                            "contenu RSS=%d caractères",
+                            _safe_log(name), _safe_log(category), _safe_log(title),
+                            published.isoformat() if published else "absente",
+                            f"{age:.1f}" if age is not None else "inconnu",
+                            len(rich_text[:12_000]))
                 if len(bucket) >= per_feed:
                     break
             if bucket:
@@ -161,6 +192,9 @@ def collect_rss(
         except Exception as error:
             logger.warning("%s : flux RSS impossible (%s, HTTP %s)",
                            name, type(error).__name__, getattr(error, "code", "—"))
+            logger.info("[RSS %s / %s] HTTP %s | entrées reçues : 0 | fenêtre temporelle : 0 | échec=%s",
+                        _safe_log(name), _safe_log(category), getattr(error, "code", "inconnu"),
+                        type(error).__name__)
             errors += 1
     items: list[NewsItem] = []
     while len(items) < limit and any(buckets):
