@@ -97,7 +97,7 @@ class NewsItem(Modele):
     title: str = Field(min_length=1, max_length=240)
     category: str = Field(default="Actualites", max_length=80)
     summary: str = Field(min_length=1, max_length=1600)
-    expanded_summary: str = Field(default="", max_length=3200)
+    expanded_summary: str = Field(default="", max_length=12000)
     source: SourceRef
     importance: Importance = Importance.NORMAL
     illustration: Illustration | None = None

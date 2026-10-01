@@ -73,7 +73,7 @@ def _robots_allow(url: str) -> bool:
 
 def article_material(item: NewsItem) -> Material:
     """N'utilise le corps public que si robots.txt l'autorise ; sinon le RSS suffit."""
-    text = item.summary
+    text = item.expanded_summary or item.summary
     url = str(item.source.url or "")
     if url.startswith("https://"):
         try:

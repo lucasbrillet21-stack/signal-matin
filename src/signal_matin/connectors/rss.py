@@ -40,6 +40,18 @@ def _plain(value: str) -> str:
     return " ".join(re.sub(r"<[^>]+>", " ", html.unescape(value or "")).split())
 
 
+def feed_texts(element: ET.Element) -> dict[str, str]:
+    """Return usable RSS/Atom text fields, preserving the richest field separately."""
+    result: dict[str, str] = {}
+    for child in element:
+        tag = _tag(child)
+        if tag in {"description", "summary", "encoded", "content"}:
+            value = _plain(" ".join(child.itertext()))
+            if value:
+                result[tag] = value
+    return result
+
+
 def _date(element: ET.Element) -> dt.datetime | None:
     value = _text(element, {"pubdate", "published", "updated", "date"})
     if not value:
@@ -122,14 +134,14 @@ def collect_rss(
                     continue
                 seen.add(key)
                 seen.add(title_key)
-                summary = _plain(_text(node, {"description", "summary", "content"}))
-                # Les flux peuvent contenir un article entier : ne garder qu'un court extrait.
-                summary = summary[:300].rsplit(" ", 1)[0] if len(summary) > 300 else summary
+                texts = feed_texts(node)
+                summary = texts.get("description") or texts.get("summary") or texts.get("encoded") or texts.get("content") or ""
+                rich_text = max(texts.values(), key=len, default=summary)
                 bucket.append(NewsItem(
                     title=title,
                     category=category,
-                    summary=summary or "Resume non fourni par le flux.",
-                    expanded_summary=summary,
+                    summary=(summary[:1600] or "Resume non fourni par le flux."),
+                    expanded_summary=rich_text[:12_000],
                     source=SourceRef(name=name, url=link, published_at=published),
                 ))
                 if len(bucket) >= per_feed:
