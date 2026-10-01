@@ -243,6 +243,49 @@ def _source_priority(hit: SearchHit) -> tuple[int, float]:
     return priority, -hit.score
 
 
+def filter_tavily_hits(first: NewsItem, current: list[Material], hits: list[SearchHit],
+                       cache: dict[str, Material] | None = None) -> list[Material]:
+    """Applique le même filtrage de pertinence, de sources et de doublons que l'édition."""
+    cache = cache if cache is not None else {}
+    for hit in sorted(hits, key=_source_priority):
+        if len(current) >= 5:
+            break
+        domain = hit.publisher.casefold()
+        if any(bad in domain for bad in ("pinterest.", "quora.", "reddit.", "medium.com")):
+            continue
+        if any(marker in (hit.title + " " + hit.content).casefold() for marker in
+               ("client challenge", "subscribe to continue", "enable javascript to continue")):
+            continue
+        if sum(_publisher_key(str(material.source.url or "")) ==
+               _publisher_key(hit.url) for material in current) >= 2:
+            continue
+        if first.source.published_at and hit.published_at and (
+            hit.published_at < first.source.published_at - dt.timedelta(days=14)
+        ) and first.category not in EVERGREEN_CATEGORIES:
+            continue
+        item = NewsItem(title=hit.title, category=first.category,
+                        summary=hit.content[:1600], expanded_summary=hit.content,
+                        source=SourceRef(name=hit.publisher, title=hit.title, url=hit.url,
+                                         published_at=hit.published_at))
+        if not _same_story(first, item):
+            continue
+        key = _canonical_url(item)
+        if key in {_canonical_url(first.model_copy(update={"source": material.source}))
+                   for material in current}:
+            continue
+        if key not in cache:
+            fetched = article_material(item)
+            cache[key] = (fetched if fetched.origin == "page" else
+                          Material(fetched.source, fetched.title, fetched.text,
+                                   fetched.license_note, "tavily"))
+        material = cache[key]
+        if len(material.text.strip()) < 100 or any(_near_duplicate(material.text, old.text)
+                                                   for old in current):
+            continue
+        current.append(material)
+    return current
+
+
 def _tavily_materials(first: NewsItem, current: list[Material], config: dict,
                       budget: TavilyBudget, cache: dict[str, Material], tier: str) -> list[Material]:
     if not bool(setting(config, "tavily.enabled", False)):
@@ -271,45 +314,9 @@ def _tavily_materials(first: NewsItem, current: list[Material], config: dict,
             logger.warning("[Tavily] recherche impossible (%s)", error)
             break
         logger.info("[Tavily] %d résultats", len(hits))
-        retained = 0
-        for hit in sorted(hits, key=_source_priority):
-            if len(current) >= 5:
-                break
-            domain = hit.publisher.casefold()
-            if any(bad in domain for bad in ("pinterest.", "quora.", "reddit.", "medium.com")):
-                continue
-            if any(marker in (hit.title + " " + hit.content).casefold() for marker in
-                   ("client challenge", "subscribe to continue", "enable javascript to continue")):
-                continue
-            if sum(_publisher_key(str(material.source.url or "")) ==
-                   _publisher_key(hit.url) for material in current) >= 2:
-                continue
-            if first.source.published_at and hit.published_at and (
-                hit.published_at < first.source.published_at - dt.timedelta(days=14)
-            ) and first.category not in EVERGREEN_CATEGORIES:
-                continue
-            item = NewsItem(title=hit.title, category=first.category,
-                            summary=hit.content[:1600], expanded_summary=hit.content,
-                            source=SourceRef(name=hit.publisher, title=hit.title, url=hit.url,
-                                             published_at=hit.published_at))
-            if not _same_story(first, item):
-                continue
-            key = _canonical_url(item)
-            if key in {_canonical_url(first.model_copy(update={"source": material.source}))
-                       for material in current}:
-                continue
-            if key not in cache:
-                fetched = article_material(item)
-                cache[key] = (fetched if fetched.origin == "page" else
-                              Material(fetched.source, fetched.title, fetched.text,
-                                       fetched.license_note, "tavily"))
-            material = cache[key]
-            if len(material.text.strip()) < 100 or any(_near_duplicate(material.text, old.text)
-                                                       for old in current):
-                continue
-            current.append(material)
-            retained += 1
-        logger.info("[Tavily] %d résultats retenus", retained)
+        before = len(current)
+        filter_tavily_hits(first, current, hits, cache)
+        logger.info("[Tavily] %d résultats retenus", len(current) - before)
     return current
 
 
