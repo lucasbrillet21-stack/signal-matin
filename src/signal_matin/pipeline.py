@@ -17,7 +17,7 @@ from .models import (
 )
 from .normalizer import normaliser_edition
 from .thought import thought_for_date
-from .editorial import categories_for_date, local_date, write_features
+from .editorial import categories_for_date, fallback_categories, local_date, write_features
 
 
 def _enabled(config: dict, name: str, default: bool = True) -> bool:
@@ -188,7 +188,22 @@ def _build_personal(config: dict, now: dt.datetime, mode: str) -> MorningEdition
     )
     for index, item in zip(music_positions, music_items):
         items[index] = item
-    features = write_features(config, date, selected, items)
+    fallback_statuses: list[DataSourceStatus] = []
+    def load_fallback(category: str) -> list[NewsItem]:
+        category_feeds = [feed for feed in (setting(config, "news.feeds", []) or [])
+                          if isinstance(feed, dict) and feed.get("category") == category]
+        if not category_feeds:
+            return []
+        found, result = collect_rss(
+            category_feeds, now, limit=12,
+            max_age_hours=int(setting(config, "news.max_age_hours", 48) or 48),
+            status_name=f"Repli {category}", require_date=True,
+        )
+        fallback_statuses.append(result)
+        return found
+
+    features = write_features(config, date, selected + fallback_categories(config, selected),
+                              items, load_category=load_fallback, primary=selected)
     edition = MorningEdition(
         generated_at=now, demo=False, personal_journal=True,
         edition=EditionMeta(
@@ -198,7 +213,7 @@ def _build_personal(config: dict, now: dt.datetime, mode: str) -> MorningEdition
             subtitle=str(setting(config, "paper.subtitle", "Journal personnel")),
             motto=str(setting(config, "paper.motto", "Lire le monde avec attention.")),
         ),
-        sources=[status], personal_articles=items,
+        sources=[status, *fallback_statuses], personal_articles=items[:40],
         expected_categories=selected,
         personal_features=features,
         thought=thought_for_date(date),

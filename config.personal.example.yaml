@@ -33,6 +33,13 @@ news:
 synthesis:
   enabled: true
   # Les articles longs exigent l'API configurée dans .env ou les secrets GitHub.
+tavily:
+  enabled: true
+  min_discovery_chars: 120
+  rich_chars_dossier: 3000
+  max_searches_per_article: 2
+  max_results_per_search: 8
+  max_searches_per_edition: 6
 editorial:
   timezone: "Australia/Sydney"
   rotation:
@@ -43,6 +50,7 @@ editorial:
     friday: ["Musique", "Culture", "Littérature"]
     saturday: ["Histoire", "Sciences & Curiosités", "Culture"]
     sunday: ["International & Géopolitique", "Philosophie", "Culture"]
+  fallback: ["International & Géopolitique", "Sciences & Curiosités", "Ingénierie", "Intelligence artificielle", "Informatique", "Histoire", "Culture", "Économie"]
   targets:
     dossier: [700, 900]
     article: [450, 600]

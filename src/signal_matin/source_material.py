@@ -23,6 +23,7 @@ class Material:
     title: str
     text: str
     license_note: str = ""
+    origin: str = "rss"
 
 
 def _get(url: str, *, limit: int = 1_000_000) -> str:
@@ -74,6 +75,7 @@ def _robots_allow(url: str) -> bool:
 def article_material(item: NewsItem) -> Material:
     """N'utilise le corps public que si robots.txt l'autorise ; sinon le RSS suffit."""
     text = item.expanded_summary or item.summary
+    origin = "rss"
     url = str(item.source.url or "")
     if url.startswith("https://"):
         try:
@@ -84,6 +86,7 @@ def article_material(item: NewsItem) -> Material:
                 body = "\n".join(parser.paragraphs)
                 if len(body) >= 400:
                     text = body[:12_000]
+                    origin = "page"
                 elif re.search(r"<title[^>]*>\s*Client Challenge\s*</title>", page, re.I):
                     logger.warning("%s : page de vérification reçue à la place de l'article", item.source.name)
                 else:
@@ -93,7 +96,7 @@ def article_material(item: NewsItem) -> Material:
         except (OSError, ValueError, UnicodeError) as error:
             logger.warning("%s : lecture de l'article impossible (%s, HTTP %s)",
                            item.source.name, type(error).__name__, getattr(error, "code", "—"))
-    return Material(source=item.source, title=item.title, text=text)
+    return Material(source=item.source, title=item.title, text=text, origin=origin)
 
 
 def wikipedia_material(topic: str) -> Material | None:
@@ -116,6 +119,7 @@ def wikipedia_material(topic: str) -> Material | None:
             source=SourceRef(name="Wikipédia, contributeurs", title=title, url=url),
             title=title, text=text[:16_000],
             license_note="Source Wikipédia, CC BY-SA 4.0 ; rédaction adaptée.",
+            origin="wikipedia",
         )
     except (OSError, ValueError, KeyError, StopIteration, TypeError):
         return None

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import logging
 import sys
 import webbrowser
 from pathlib import Path
@@ -155,6 +156,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_config(args.config)
+    if config.get("profile") == "personal":
+        logging.basicConfig(level=logging.WARNING, format="%(message)s")
+        logging.getLogger("signal_matin.editorial").setLevel(logging.INFO)
     if hasattr(args, "date") and args.date is None:
         args.date = (dt.datetime.now(ZoneInfo(str(setting(config, "editorial.timezone", "Australia/Sydney")))).date()
                      if config.get("profile") == "personal" else dt.date.today())

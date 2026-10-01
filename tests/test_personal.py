@@ -54,6 +54,9 @@ def feed(date: dt.datetime, category: str) -> bytes:
 
 class PersonalTests(unittest.TestCase):
     def setUp(self):
+        no_paid_search = patch.dict(os.environ, {"TAVILY_API_KEY": ""})
+        no_paid_search.start()
+        self.addCleanup(no_paid_search.stop)
         self.config = load_config("config.personal.example.yaml")
         self.now = dt.datetime(2026, 9, 28, 7, tzinfo=dt.timezone(dt.timedelta(hours=10)))
 

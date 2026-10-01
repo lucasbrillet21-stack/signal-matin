@@ -40,12 +40,15 @@ LONG_SYSTEM = """Tu es rédacteur d'un journal personnel en français. Écris un
 Utilise uniquement les matériaux numérotés fournis. N'invente jamais de fait, date,
 chiffre, citation, relation causale ou source. Ne reprends jamais plusieurs phrases
 consécutives d'une source. N'accède à aucune connaissance non présente dans les
-matériaux pour combler un manque. Si la matière est insuffisante, écris plus court
+matériaux pour combler un manque. Ne cherche pas sur Internet. Si la matière est insuffisante, écris plus court
 ou réponds exactement INSUFFISANT. Distingue les faits rapportés, le contexte,
 les mécanismes, les conséquences, l'analyse et les limites. Sur les sujets
 politiques, reste neutre et présente les perspectives présentes dans les sources
 sans attribuer d'intentions. Chaque paragraphe doit citer au moins un numéro de
 source existant. Ne produis aucune citation directe non fournie.
+Ne présente jamais l'affirmation d'une seule source comme un consensus.
+Signale les incertitudes et différencie clairement constat, contexte et analyse.
+Écris un récit explicatif approfondi, pas une succession de résumés de sources.
 Réponds uniquement en JSON : {"title":"...","paragraphs":[{"kind":"facts|context|mechanisms|analysis|consequences|limits","text":"...","source_ids":[1]}]}.
 Écris des paragraphes de 50 à 140 mots ; conserve des transitions naturelles.
 La conclusion doit exposer au moins une limite ou incertitude documentée.
@@ -61,7 +64,7 @@ def compose_feature(
     evidence = "\n\n".join(
         f"SOURCE {index}: {material.source.name} — {material.title}\n"
         f"DATE: {material.source.published_at.date().isoformat() if material.source.published_at else 'non indiquée'}\n"
-        f"URL: {material.source.url}\nTEXTE: {material.text}"
+        f"URL: {material.source.url}\nORIGINE: {material.origin}\nTEXTE: {material.text}"
         for index, material in enumerate(materials[:5], 1)
     )
     lower, upper = target

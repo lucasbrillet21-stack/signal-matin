@@ -55,9 +55,32 @@ intégralement. Les flux préconfigurés du Monde sont [réservés à un usage s
 personnel, non professionnel et non collectif](https://www.lemonde.fr/le-monde-et-vous/article/2025/07/14/les-flux-rss-du-monde-fr_5498778_3237.html).
 Deux [flux RSS Euronews](https://fr.euronews.com/widgets) apportent une autre
 source sur l'international et l'Europe ; consulte leurs conditions d'utilisation.
-Remplace-les dans `config.yaml` si cet usage ne te convient pas. Seuls les flux
-des rubriques du jour sont consultés ; ils doivent être accessibles depuis la
-machine qui génère le journal.
+Remplace-les dans `config.yaml` si cet usage ne te convient pas. Les flux des
+rubriques prévues sont consultés en priorité ; les rubriques de
+`editorial.fallback` ne sont interrogées que s'il manque des dossiers validés.
+Ils doivent être accessibles depuis la machine qui génère le journal.
+
+### Recherche documentaire Tavily
+
+Le profil personnel peut enrichir un sujet RSS court avec Tavily Search. Mets
+`TAVILY_API_KEY` dans `.env` local ou dans le secret GitHub Actions du même nom.
+La clé n'apparaît pas dans `config.yaml`. Tavily fournit des URL et des extraits
+documentaires ; le programme tente ensuite de lire chaque page publique selon
+`robots.txt`. Il ne demande aucune réponse rédigée à Tavily. Une page bloquée
+ne fait l'objet d'aucun contournement : seuls les extraits retournés par la
+recherche peuvent alors servir de matière, si leur provenance est vérifiable.
+
+`tavily.enabled`, `min_discovery_chars`, `rich_chars_dossier`,
+`max_searches_per_article`, `max_results_per_search` et
+`max_searches_per_edition` règlent le déclenchement et le quota. Les valeurs
+fournies sont 120 caractères pour identifier un sujet, 3 000 caractères pour
+un grand dossier riche, deux recherches par sujet, huit résultats par recherche
+et six recherches par édition. Le minimum de 900 caractères avant rédaction
+reste obligatoire. Sans clé ou après épuisement du quota, le journal poursuit
+avec les sources déjà obtenues.
+
+Si un ancien `config.yaml` local existe déjà, recopie le bloc `tavily` de
+`config.personal.example.yaml` ou utilise directement cet exemple avec `--config`.
 
 ### Rédaction longue par API
 
@@ -90,7 +113,8 @@ crée dans **Settings → Secrets and variables → Actions** les secrets
 `GMAIL_SENDER`, `GMAIL_RECIPIENT` et `GMAIL_APP_PASSWORD`. Les trois secrets
 `SIGNAL_MATIN_LLM_URL`, `SIGNAL_MATIN_LLM_MODEL` et
 `SIGNAL_MATIN_LLM_API_KEY` sont nécessaires au profil personnel long dans le
-workflow. Le bouton **Run
+workflow. Ajoute `TAVILY_API_KEY` pour activer la recherche documentaire ; le
+workflow continue sans cette clé. Le bouton **Run
 workflow** permet un lancement manuel, qui envoie aussi l'email si les secrets
 sont présents.
 
@@ -107,6 +131,7 @@ dépôt public. Le PDF est conservé comme artefact du workflow.
 $env:PYTHONPATH = 'src'
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p test_personal.py -v
 .\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe scripts/dry_run_tavily.py
 .\.venv\Scripts\python.exe scripts/verify_personal_layout.py
 ```
 
