@@ -160,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
         logging.basicConfig(level=logging.WARNING, format="%(message)s")
         logging.getLogger("signal_matin.editorial").setLevel(logging.INFO)
         logging.getLogger("signal_matin.connectors.rss").setLevel(logging.INFO)
+        logging.getLogger("signal_matin.api_cost").setLevel(logging.INFO)
     if hasattr(args, "date") and args.date is None:
         args.date = (dt.datetime.now(ZoneInfo(str(setting(config, "editorial.timezone", "Australia/Sydney")))).date()
                      if config.get("profile") == "personal" else dt.date.today())

@@ -47,6 +47,30 @@ jobs:
         run: |
           python -m pip install -e .
           python -m playwright install --with-deps chromium
+      - name: Déterminer le mois de Sydney
+        if: steps.ready.outputs.ready == 'true'
+        id: month
+        run: echo "month=$(TZ=Australia/Sydney date +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - name: Restaurer le compteur Tavily local connu
+        if: steps.ready.outputs.ready == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            output/state/tavily-credits.json
+            output/state/timeless-topics.json
+          key: signal-matin-state-${{ github.run_id }}
+          restore-keys: |
+            signal-matin-state-
+      - name: Initialiser le compteur si absent
+        if: steps.ready.outputs.ready == 'true'
+        run: |
+          mkdir -p output/state
+          if [ ! -f output/state/tavily-credits.json ]; then
+            printf '{"month":"%s","credits":0}\n' '${{ steps.month.outputs.month }}' > output/state/tavily-credits.json
+          fi
+          if [ ! -f output/state/timeless-topics.json ]; then
+            printf '{}\n' > output/state/timeless-topics.json
+          fi
       - name: Générer et envoyer le PDF
         if: steps.ready.outputs.ready == 'true'
         env:
@@ -65,3 +89,11 @@ jobs:
           name: journal-personnel
           path: output/pdf/*.pdf
           if-no-files-found: ignore
+      - name: Sauvegarder le compteur Tavily local connu
+        if: steps.ready.outputs.ready == 'true' && always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            output/state/tavily-credits.json
+            output/state/timeless-topics.json
+          key: signal-matin-state-${{ github.run_id }}

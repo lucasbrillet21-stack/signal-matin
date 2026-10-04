@@ -26,8 +26,6 @@ news:
     - {name: "GitHub Blog", category: "Informatique", url: "https://github.blog/feed/", include_any: ["software", "developer", "code", "repository", "security", "open source", "engineering", "programming"]}
     - {name: "Cloudflare Engineering", category: "Informatique", url: "https://blog.cloudflare.com/tag/engineering/rss"}
     - {name: "arXiv", category: "Informatique", url: "https://rss.arxiv.org/rss/cs.AI"}
-    - {name: "Smithsonian", category: "Histoire", url: "https://www.smithsonianmag.com/rss/latest_articles/", include_any: ["history", "historic", "archaeology", "ancient", "century", "heritage"]}
-    - {name: "UNESCO", category: "Histoire", url: "https://whc.unesco.org/en/news/rss/"}
     - {name: "Smithsonian", category: "Culture", url: "https://www.smithsonianmag.com/rss/latest_articles/", include_any: ["art", "culture", "museum", "music", "film", "literature", "artist", "exhibition"]}
     - {name: "UNESCO", category: "Culture", url: "https://whc.unesco.org/en/news/rss/"}
 synthesis:
@@ -37,11 +35,21 @@ tavily:
   enabled: true
   min_discovery_chars: 120
   rich_chars_dossier: 3000
-  max_searches_per_article: 2
   max_results_per_search: 8
-  max_searches_per_edition: 6
+  pre_draft_target_searches: 3
+  max_pre_draft_searches: 10
+  max_post_critique_searches: 5
+  max_searches_per_edition: 30
+  monthly_credit_budget: 1500
+api_cost:
+  # Tarifs théoriques USD, modifiables selon votre contrat et les prix officiels.
+  models:
+    gpt-4.1-mini: {input_per_million_usd: 0.40, output_per_million_usd: 1.60}
+  tavily_usd_per_credit: 0.008
 editorial:
   timezone: "Australia/Sydney"
+  v2: {enabled: true}
+  topic_bank_file: "topics.v2.yaml"
   rotation:
     monday: ["International & Géopolitique", "Économie", "Sciences & Curiosités"]
     tuesday: ["Sciences & Curiosités", "Ingénierie", "Intelligence artificielle"]
@@ -49,7 +57,7 @@ editorial:
     thursday: ["Informatique", "Intelligence artificielle", "Économie"]
     friday: ["Musique", "Culture", "Littérature"]
     saturday: ["Histoire", "Sciences & Curiosités", "Culture"]
-    sunday: ["International & Géopolitique", "Philosophie", "Culture"]
+    sunday: ["International & Géopolitique", "Philosophie", "Mythologies & Religions"]
   fallback: ["International & Géopolitique", "Sciences & Curiosités", "Ingénierie", "Intelligence artificielle", "Informatique", "Histoire", "Culture", "Économie"]
   targets:
     dossier: [700, 900]

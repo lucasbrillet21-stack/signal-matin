@@ -41,6 +41,8 @@ def material(item):
 class TavilyDiagnosticTests(unittest.TestCase):
     def setUp(self):
         self.config = load_config("config.personal.example.yaml")
+        self.config["editorial"]["v2"]["enabled"] = False
+        self.config["tavily"]["max_searches_per_edition"] = 6
 
     def test_workflow_is_manual_and_receives_only_tavily_secret(self):
         path = Path(".github/workflows/tavily-diagnostic.yml")

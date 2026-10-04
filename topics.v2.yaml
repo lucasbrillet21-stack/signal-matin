@@ -1,0 +1,42 @@
+Histoire:
+  - {title: "La crise de juillet 1914", scope: "chaîne diplomatique et décisions avant la Première Guerre mondiale"}
+  - {title: "La bataille de la Somme en 1916", scope: "objectifs, tactiques et conséquences humaines"}
+  - {title: "Le traité de Versailles en 1919", scope: "négociations et effets politiques"}
+  - {title: "La Commune de Paris en 1871", scope: "origines, institutions et répression"}
+  - {title: "Les révolutions européennes de 1848", scope: "diffusion, revendications et limites"}
+  - {title: "L'unification italienne", scope: "acteurs, guerres et transformations politiques"}
+  - {title: "L'unification allemande de 1871", scope: "Prusse, diplomatie et nouvel équilibre européen"}
+  - {title: "L'affaire Dreyfus", scope: "justice, presse et société française"}
+  - {title: "L'expédition de Lewis et Clark", scope: "exploration, savoirs autochtones et expansion américaine"}
+  - {title: "La révolution haïtienne", scope: "esclavage, indépendance et ordre atlantique"}
+  - {title: "Le congrès de Vienne", scope: "équilibre européen après Napoléon"}
+  - {title: "La guerre de Crimée", scope: "diplomatie, logistique et réforme"}
+  - {title: "L'expédition Endurance de Shackleton", scope: "exploration polaire et survie"}
+  - {title: "La guerre russo-japonaise", scope: "causes, opérations et conséquences impériales"}
+  - {title: "Le printemps de Prague", scope: "réformes et intervention de 1968"}
+  - {title: "La conférence de Bandung", scope: "décolonisation et non-alignement"}
+  - {title: "La crise de Suez de 1956", scope: "intervention, diplomatie et recul colonial"}
+  - {title: "La chute de Constantinople en 1453", scope: "siège, empire et héritages"}
+  - {title: "La révolte des Taiping", scope: "religion, guerre et crise de l'empire Qing"}
+  - {title: "La révolution mexicaine", scope: "causes sociales, factions et constitution"}
+Mythologies & Religions:
+  - {title: "Prométhée et le feu", scope: "versions grecques, transgression et interprétations"}
+  - {title: "Le livre de Job", scope: "souffrance, dialogues et traditions d'interprétation"}
+  - {title: "L'épopée de Gilgamesh", scope: "manuscrits, mortalité et voyage"}
+  - {title: "Les récits du Déluge", scope: "textes mésopotamiens et bibliques, ressemblances et différences"}
+  - {title: "Dionysos dans les traditions grecques", scope: "cultes, récits et représentations"}
+  - {title: "Loki dans les sources nordiques", scope: "poèmes, prose et interprétations"}
+  - {title: "Le sacrifice d'Isaac", scope: "textes et lectures juives, chrétiennes et musulmanes"}
+  - {title: "L'Ecclésiaste", scope: "texte, sagesse et traditions de lecture"}
+  - {title: "L'exode dans la tradition biblique", scope: "récit, mémoire et questions historiques"}
+  - {title: "La sourate de la Caverne", scope: "récits, contexte textuel et interprétations"}
+  - {title: "Isis et Osiris", scope: "sources égyptiennes et transmission du mythe"}
+  - {title: "Perséphone et Déméter", scope: "récit, rites et cycles saisonniers"}
+  - {title: "Le Ragnarok", scope: "sources médiévales et lectures modernes"}
+  - {title: "La Bhagavad-Gita", scope: "dialogue, devoir et contextes de réception"}
+  - {title: "Le mythe d'Inanna aux Enfers", scope: "tablettes et interprétations"}
+  - {title: "La parabole du fils prodigue", scope: "texte, contexte et traditions d'interprétation"}
+  - {title: "La naissance du Bouddha dans les traditions", scope: "récits, iconographie et histoire"}
+  - {title: "La tour de Babel", scope: "texte, langues et réception"}
+  - {title: "Le jugement d'Osiris", scope: "textes funéraires et représentations"}
+  - {title: "Les douze travaux d'Héraclès", scope: "versions antiques et fonctions du héros"}

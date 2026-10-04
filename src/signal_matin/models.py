@@ -150,6 +150,7 @@ class ThoughtOfDay(Modele):
 
 class ArticleParagraph(Modele):
     kind: Literal["facts", "context", "mechanisms", "analysis", "consequences", "limits"]
+    heading: str = Field(default="", max_length=100)
     text: str = Field(min_length=1, max_length=1800)
     source_ids: list[int] = Field(default_factory=list, max_length=8)
 
@@ -180,6 +181,17 @@ class RubricDiagnostic(Modele):
     result: Literal["published", "documentation_insufficient", "tavily_insufficient",
                     "writing_error", "article_rejected"] = "documentation_insufficient"
     reason: str = Field(default="", max_length=120)
+
+
+class ApiCost(Modele):
+    model: str = ""
+    llm_calls: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    tavily_searches: int = 0
+    llm_usd: float | None = None
+    tavily_usd: float | None = None
+    total_usd: float | None = None
 
 
 class WordOfTheDay(Modele):
@@ -262,6 +274,7 @@ class MorningEdition(Modele):
     expected_categories: list[str] = Field(default_factory=list, max_length=24)
     personal_features: list[FeatureArticle] = Field(default_factory=list, max_length=3)
     personal_diagnostics: list[RubricDiagnostic] = Field(default_factory=list, max_length=24)
+    api_cost: ApiCost | None = None
 
     @field_validator("generated_at")
     @classmethod

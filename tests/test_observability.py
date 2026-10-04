@@ -43,6 +43,8 @@ def article(category, tier, materials, target):
 class ObservabilityTests(unittest.TestCase):
     def setUp(self):
         self.config = load_config("config.personal.example.yaml")
+        self.config["editorial"]["v2"]["enabled"] = False
+        self.config["tavily"]["max_searches_per_edition"] = 6
 
     def test_rss_logs_http_window_candidate_and_full_rich_length(self):
         text = "Contenu riche documenté. " * 600

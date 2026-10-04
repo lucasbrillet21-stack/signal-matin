@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 from pathlib import Path
 
 from .config import ROOT, setting
@@ -13,7 +14,7 @@ from .daily_learning import construire_apprentissage_du_jour
 from .models import (
     DataSourceStatus, DataState, DigestItem, EditionMeta, Extras, Importance,
     LearningPage, MorningEdition, NewsBundle, NewsItem, PersonalBlock, QuoteBlock,
-    Recommendation, RubricDiagnostic, SourceRef,
+    Recommendation, RubricDiagnostic, ApiCost, SourceRef,
 )
 from .normalizer import normaliser_edition
 from .thought import thought_for_date
@@ -203,9 +204,10 @@ def _build_personal(config: dict, now: dt.datetime, mode: str) -> MorningEdition
         return found
 
     diagnostics: list[RubricDiagnostic] = []
+    costs: list[ApiCost] = []
     features = write_features(config, date, selected + fallback_categories(config, selected),
                               items, load_category=load_fallback, primary=selected,
-                              diagnostics=diagnostics)
+                              diagnostics=diagnostics, costs=costs)
     edition = MorningEdition(
         generated_at=now, demo=False, personal_journal=True,
         edition=EditionMeta(
@@ -219,6 +221,9 @@ def _build_personal(config: dict, now: dt.datetime, mode: str) -> MorningEdition
         expected_categories=selected,
         personal_features=features,
         personal_diagnostics=diagnostics,
+        api_cost=costs[0] if costs else ApiCost(
+            model=os.environ.get("SIGNAL_MATIN_LLM_MODEL", ""),
+            input_tokens=None, output_tokens=None, total_usd=None),
         thought=thought_for_date(date),
         personal=PersonalBlock(greeting="Bonjour. Voici les informations sourcées du jour."),
     )

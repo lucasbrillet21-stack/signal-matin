@@ -1042,6 +1042,7 @@ PERSONAL_CSS = """
 .thought-card blockquote {margin:2mm 0;font-size:14pt;font-style:italic}
 .thought-card p {font-size:10.5pt;line-height:1.4}
 .personal-absence {font-size:9pt;color:#333;margin-top:5mm}
+.api-cost {font:8pt var(--sans);color:#555;border-top:1px solid #aaa;margin-top:6mm;padding-top:2mm;break-inside:avoid}
 """
 
 
@@ -1064,10 +1065,16 @@ def _feature_blocks(feature: FeatureArticle) -> str:
     )
     source_html = (f'<div class="personal-source">Sources : {source_list}. '
                    f'{_e(feature.attribution)}{license_link}</div>')
+    seen_labels: set[str] = set()
+    has_parts = any(paragraph.heading for paragraph in feature.paragraphs)
     for index, paragraph in enumerate(feature.paragraphs):
         refs = " ".join(f"[{number}]" for number in paragraph.source_ids)
-        body = (f'<strong>{labels[paragraph.kind]} — </strong>{_e(paragraph.text)} '
-                f'<sup>{_e(refs)}</sup>')
+        label = paragraph.heading or ("" if has_parts else labels[paragraph.kind])
+        key = label.casefold()
+        prefix = f'<strong>{_e(label)} — </strong>' if label and key not in seen_labels else ""
+        if label:
+            seen_labels.add(key)
+        body = f'{prefix}{_e(paragraph.text)} <sup>{_e(refs)}</sup>'
         if index == 0:
             reasons = []
             if "documentation_limited" in feature.shortfall_reasons:
@@ -1107,6 +1114,16 @@ def _render_personal(edition: MorningEdition, css: str, pagination: str) -> str:
         '<div class="personal-intro">Trois regards au plus, pour lire les faits et leur contexte.</div>'
         + thought_html + "".join(_feature_blocks(feature) for feature in features)
     )
+    if edition.api_cost:
+        cost = edition.api_cost
+        estimate = (f"${cost.total_usd:.2f}" if cost.total_usd is not None else
+                    "estimation indisponible")
+        tokens = (f"{cost.input_tokens} tokens entrée · {cost.output_tokens} tokens sortie"
+                  if cost.input_tokens is not None and cost.output_tokens is not None else
+                  "usage tokens indisponible")
+        first_body += (f'<div class="api-cost"><strong>COÛT API THÉORIQUE DE L’ÉDITION</strong><br>'
+                       f'{_e(cost.model or "Modèle inconnu")} : {cost.llm_calls} appels · {_e(tokens)}<br>'
+                       f'Tavily : {cost.tavily_searches} recherches · Estimation : {_e(estimate)}</div>')
     pages = [_page(edition, 1, "Le journal du jour", first_body, first=True, slug="personal")]
     absent = [category for category in edition.expected_categories
               if category not in {feature.category for feature in features}]

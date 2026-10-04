@@ -58,6 +58,8 @@ class PersonalTests(unittest.TestCase):
         no_paid_search.start()
         self.addCleanup(no_paid_search.stop)
         self.config = load_config("config.personal.example.yaml")
+        self.config["editorial"]["v2"]["enabled"] = False
+        self.config["tavily"]["max_searches_per_edition"] = 6
         self.now = dt.datetime(2026, 9, 28, 7, tzinfo=dt.timezone(dt.timedelta(hours=10)))
 
     def test_all_seven_rotations_and_sydney_date(self):
@@ -68,13 +70,13 @@ class PersonalTests(unittest.TestCase):
             ["Informatique", "Intelligence artificielle", "Économie"],
             ["Musique", "Culture", "Littérature"],
             ["Histoire", "Sciences & Curiosités", "Culture"],
-            ["International & Géopolitique", "Philosophie", "Culture"],
+            ["International & Géopolitique", "Philosophie", "Mythologies & Religions"],
         ]
         for index, categories in enumerate(expected):
             date = BASE + dt.timedelta(days=index)
             self.assertEqual(categories_for_date(self.config, date), categories)
             self.assertLessEqual(len(categories), 3)
-        self.assertEqual(len({name for day in expected for name in day}), 11)
+        self.assertEqual(len({name for day in expected for name in day}), 12)
         self.assertEqual(local_date(self.config,
                          dt.datetime(2026, 9, 27, 21, tzinfo=dt.timezone.utc)), BASE)
         bad = {**self.config, "editorial": {"rotation": {"monday": ["Culture"]}}}

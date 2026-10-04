@@ -49,6 +49,8 @@ def feature(category, tier, materials, target):
 class TavilyTests(unittest.TestCase):
     def setUp(self):
         self.config = load_config("config.personal.example.yaml")
+        self.config["editorial"]["v2"]["enabled"] = False
+        self.config["tavily"]["max_searches_per_edition"] = 6
         self.env = {"SIGNAL_MATIN_LLM_URL": "https://example.org/chat",
                     "SIGNAL_MATIN_LLM_MODEL": "fake",
                     "SIGNAL_MATIN_LLM_API_KEY": "fake-secret",

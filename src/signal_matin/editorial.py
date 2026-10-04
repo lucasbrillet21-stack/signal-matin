@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from .config import setting
 from .connectors.tavily import (SearchHit, SearchTrace, TavilyError, capture_search,
                                 search as tavily_search)
-from .models import FeatureArticle, NewsItem, RubricDiagnostic, SourceRef
+from .models import ApiCost, FeatureArticle, NewsItem, RubricDiagnostic, SourceRef
 from .source_material import Material, article_material, wikipedia_material
 from .synthesis import ComposeTrace, capture_compose, compose_feature, llm_configured
 
@@ -23,7 +23,8 @@ WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", 
 TIERS = ("dossier", "article", "lecture")
 DEFAULT_TARGETS = {"dossier": (700, 900), "article": (450, 600), "lecture": (300, 450)}
 logger = logging.getLogger(__name__)
-EVERGREEN_CATEGORIES = {"Philosophie", "Littérature", "Histoire", "Culture", "Musique"}
+EVERGREEN_CATEGORIES = {"Philosophie", "Littérature", "Histoire", "Culture", "Musique",
+                        "Mythologies & Religions"}
 
 
 def _safe_log(value: object, limit: int = 240) -> str:
@@ -260,7 +261,7 @@ def _near_duplicate(left: str, right: str) -> bool:
 
 def _source_priority(hit: SearchHit) -> tuple[int, float]:
     domain = hit.publisher.casefold()
-    if domain.endswith((".gov", ".edu", ".ac.uk")) or "arxiv.org" in domain:
+    if domain.endswith((".gov", ".edu", ".ac.uk", ".museum")) or "arxiv.org" in domain:
         priority = 0
     elif any(name in domain for name in ("nasa.gov", "europa.eu", "unesco.org", "who.int")):
         priority = 0
@@ -273,7 +274,8 @@ def _source_priority(hit: SearchHit) -> tuple[int, float]:
 
 def filter_tavily_hits(first: NewsItem, current: list[Material], hits: list[SearchHit],
                        cache: dict[str, Material] | None = None,
-                       on_decision: Callable[[SearchHit, str, str], None] | None = None) -> list[Material]:
+                       on_decision: Callable[[SearchHit, str, str], None] | None = None,
+                       relevant: Callable[[NewsItem, NewsItem], bool] | None = None) -> list[Material]:
     """Applique le même filtrage de pertinence, de sources et de doublons que l'édition."""
     cache = cache if cache is not None else {}
     for hit in sorted(hits, key=_source_priority):
@@ -305,7 +307,7 @@ def filter_tavily_hits(first: NewsItem, current: list[Material], hits: list[Sear
                         summary=hit.content[:1600], expanded_summary=hit.content,
                         source=SourceRef(name=hit.publisher, title=hit.title, url=hit.url,
                                          published_at=hit.published_at))
-        if not _same_story(first, item):
+        if not (relevant(first, item) if relevant else _same_story(first, item)):
             reject("irrelevant")
             continue
         key = _canonical_url(item)
@@ -443,8 +445,12 @@ def write_features(
     *, load_category: Callable[[str], list[NewsItem]] | None = None,
     primary: list[str] | None = None,
     diagnostics: list[RubricDiagnostic] | None = None,
+    costs: list[ApiCost] | None = None,
 ) -> list[FeatureArticle]:
     rows = diagnostics if diagnostics is not None else []
+    if bool(setting(config, "editorial.v2.enabled", False)) and llm_configured():
+        from .editorial_v2 import write_features_v2
+        return write_features_v2(config, date, selected, items, load_category, primary, rows, costs)
     budget = TavilyBudget(max(0, int(setting(config, "tavily.max_searches_per_edition", 6) or 0)))
     if not bool(setting(config, "synthesis.enabled", False)) or not llm_configured():
         logger.warning("Rédaction IA désactivée ou paramètres IA incomplets ; aucun appel IA")
