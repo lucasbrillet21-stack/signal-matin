@@ -3,8 +3,8 @@
 Le profil `personal` active la V2 avec `editorial.v2.enabled: true`. Les autres profils
 et les tests historiques conservent la chaîne précédente.
 
-1. Les flux RSS fournissent des candidats pour les rubriques d'actualité. Histoire et
-   Mythologies & Religions tirent leur sujet de `topics.v2.yaml`. Une entrée de cette
+1. Les flux RSS fournissent des candidats pour les rubriques d'actualité. Philosophie,
+   Histoire et Mythologies & Religions tirent leur sujet de `topics.v2.yaml`. Une entrée de cette
    banque sert de requête, jamais de preuve envoyée au rédacteur.
 2. Si le dossier initial est pauvre, la recherche Tavily explore des angles distincts.
    Les résultats traversent le filtre documentaire commun et gardent URL, organisme,
@@ -22,7 +22,8 @@ et les tests historiques conservent la chaîne précédente.
    éditoriales, réparties librement entre les paragraphes. Chaque paragraphe cite
    un identifiant stable S1, S2, etc. Le validateur vérifie les dimensions, les
    références du dossier, la longueur et les répétitions. Seules les sources citées
-   sont imprimées dans le PDF.
+   sont imprimées dans le PDF. Pour GPT-4.1-mini via l'API OpenAI, la critique
+   utilise un schéma JSON strict afin que tous ses champs soient présents.
 
 Les plafonds par article et par édition figurent dans `config.personal.example.yaml`.
 `output/state/tavily-credits.json` suit les crédits **locaux connus** du mois Sydney ;

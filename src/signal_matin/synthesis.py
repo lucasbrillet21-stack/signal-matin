@@ -6,12 +6,14 @@ import logging
 import os
 import re
 import urllib.request
+from urllib.parse import urlsplit
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Iterator
 
 from pydantic import BaseModel, Field
+from pydantic import ValidationError
 
 from .api_cost import record_llm_usage
 from .models import ArticleParagraph, FeatureArticle
@@ -64,15 +66,18 @@ def llm_configured() -> bool:
     ))
 
 
-def _chat(messages: list[dict[str, str]]) -> str:
+def _chat(messages: list[dict[str, str]], *, response_format: dict | None = None) -> str:
     endpoint = os.environ["SIGNAL_MATIN_LLM_URL"].strip()
     if not endpoint.startswith("https://"):
         raise ValueError("SIGNAL_MATIN_LLM_URL doit utiliser HTTPS")
-    payload = json.dumps({
+    body = {
         "model": os.environ["SIGNAL_MATIN_LLM_MODEL"].strip(),
         "temperature": 0,
         "messages": messages,
-    }, ensure_ascii=False).encode("utf-8")
+    }
+    if response_format:
+        body["response_format"] = response_format
+    payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         endpoint, data=payload, method="POST",
         headers={"Authorization": f"Bearer {os.environ['SIGNAL_MATIN_LLM_API_KEY'].strip()}",
@@ -98,8 +103,10 @@ source existant. Ne produis aucune citation directe non fournie.
 Ne présente jamais l'affirmation d'une seule source comme un consensus.
 Signale les incertitudes et différencie clairement constat, contexte et analyse.
 Écris un récit explicatif approfondi, pas une succession de résumés de sources.
-Organise le texte en environ trois grandes parties cohérentes, chacune avec un titre
-unique et plusieurs paragraphes fluides si nécessaire. Couvre contexte, faits,
+Organise le texte en trois grandes parties cohérentes. Donne un heading au premier
+paragraphe de chaque partie et un heading vide aux paragraphes suivants. Il faut
+trois titres de partie distincts, pas un titre par dimension éditoriale.
+Couvre contexte, faits,
 mécanismes, analyse, conséquences et limites sans répéter labels ni informations.
 Ne reviens pas artificiellement aux faits déjà exposés.
 Réponds uniquement en JSON : {"title":"...","paragraphs":[{"heading":"titre de partie ou vide pour la suite","text":"...","dimensions":["facts","context"],"source_ids":["S1"]}]}.
@@ -213,12 +220,6 @@ def compose_feature(
                        _trace.get().phase if _trace.get() else "draft",
                        next(heading for heading in headings if headings.count(heading) > 1)[:100])
         return None
-    if (revision or v2) and not 2 <= len(headings) <= 4:
-        _mark(validation="REJET", reason="invalid_section_count")
-        return None
-    if v2 and not paragraphs[0].heading:
-        _mark(validation="REJET", reason="missing_first_heading")
-        return None
     normalized = [" ".join(part.text.casefold().split()) for part in paragraphs]
     if (revision or headings) and len(normalized) != len(set(normalized)):
         _mark(validation="REJET", reason="duplicate_paragraphs")
@@ -237,6 +238,22 @@ def compose_feature(
             _mark(validation="REJET", reason="invalid_source_ids")
             logger.warning("%s : réponse IA rejetée, référence de source absente ou invalide", category)
             return None
+    if v2 and (not 2 <= len(headings) <= 4 or not paragraphs[0].heading):
+        if len(paragraphs) < 3:
+            _mark(validation="REJET", reason="invalid_section_count")
+            logger.warning("[Validation] phase=%s headings=%d paragraphs=%d",
+                           _trace.get().phase if _trace.get() else "draft", len(headings), len(paragraphs))
+            return None
+        starts = {0: "Contexte et faits", len(paragraphs) // 3: "Mécanismes et enjeux",
+                  2 * len(paragraphs) // 3: "Conséquences et limites"}
+        paragraphs = [part.model_copy(update={"heading":
+                      (part.heading or starts[index]) if index in starts else ""})
+                      for index, part in enumerate(paragraphs)]
+        logger.info("[Validation] phase=%s headings_normalized=%d->3 paragraphs=%d",
+                    _trace.get().phase if _trace.get() else "draft", len(headings), len(paragraphs))
+    elif revision and not 2 <= len(headings) <= 4:
+        _mark(validation="REJET", reason="invalid_section_count")
+        return None
     used = sorted({index for paragraph in paragraphs for index in paragraph.source_ids})
     remap = {old: new for new, old in enumerate(used, 1)}
     paragraphs = [paragraph.model_copy(update={"source_ids": [remap[index] for index in paragraph.source_ids]})
@@ -285,6 +302,24 @@ class EditorialCritique(BaseModel):
     suggested_search_queries: list[str]
 
 
+def _critique_response_format() -> dict | None:
+    """Schéma strict uniquement pour l'API OpenAI qui le prend en charge."""
+    endpoint = urlsplit(os.environ.get("SIGNAL_MATIN_LLM_URL", "")).hostname
+    model = os.environ.get("SIGNAL_MATIN_LLM_MODEL", "").strip()
+    if endpoint != "api.openai.com" or not model.startswith("gpt-4.1-mini"):
+        return None
+    scores = ("repetition", "continuity", "clarity", "depth", "source_diversity")
+    lists = ("unsupported_claims", "repeated_points", "missing_context",
+             "missing_questions", "weak_passages", "suggested_search_queries")
+    properties = {key: {"type": "number"} for key in scores}
+    properties.update({key: {"type": "array", "items": {"type": "string"}} for key in lists})
+    properties["additional_research_needed"] = {"type": "boolean"}
+    return {"type": "json_schema", "json_schema": {
+        "name": "signal_matin_editorial_critique", "strict": True,
+        "schema": {"type": "object", "properties": properties,
+                   "required": list(properties), "additionalProperties": False}}}
+
+
 def critique_feature(article: FeatureArticle, materials: list[Material]) -> EditorialCritique:
     """Évalue le draft sans réécrire ; une sortie invalide bloque la publication."""
     evidence = "\n".join(f"[S{i}] {m.source.name} | {m.source.url} | {m.text[:12000]}"
@@ -301,7 +336,17 @@ def critique_feature(article: FeatureArticle, materials: list[Material]) -> Edit
         {"role": "user", "content": "ARTICLE: " + article.model_dump_json() + "\nSOURCES:\n" + evidence +
          "\nChamps JSON obligatoires : repetition, continuity, clarity, depth, source_diversity, "
          "unsupported_claims, repeated_points, missing_context, missing_questions, weak_passages, "
-         "additional_research_needed, suggested_search_queries."},
-    ])
-    return EditorialCritique.model_validate_json(
-        raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip())
+         "additional_research_needed, suggested_search_queries. Types attendus : "
+         "repetition/continuity/clarity/depth/source_diversity = nombres entre 0 et 1 ; "
+         "unsupported_claims/repeated_points/missing_context/missing_questions/weak_passages/"
+         "suggested_search_queries = listes de chaînes, même vides ; "
+         "additional_research_needed = booléen. Aucun champ omis."},
+    ], response_format=_critique_response_format())
+    try:
+        return EditorialCritique.model_validate_json(
+            raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip())
+    except ValidationError as error:
+        for issue in error.errors():
+            logger.warning("[Validation] phase=critique reason=invalid_critique field=%s type=%s",
+                           ".".join(str(x) for x in issue.get("loc", ())), issue.get("type", "invalid"))
+        raise

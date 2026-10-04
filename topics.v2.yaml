@@ -1,3 +1,14 @@
+Philosophie:
+  - {title: "Nietzsche et l'éternel retour", scope: "formulations publiées, interprétations et limites"}
+  - {title: "Pascal et le divertissement", scope: "Pensées, condition humaine et interprétations"}
+  - {title: "Camus et l'absurde", scope: "Le Mythe de Sisyphe, révolte et limites"}
+  - {title: "Le libre arbitre", scope: "déterminisme, responsabilité et arguments philosophiques"}
+  - {title: "Le problème du mal", scope: "théodicées, objections et traditions philosophiques"}
+  - {title: "Le stoïcisme et la maîtrise de soi", scope: "Épictète, Sénèque et distinctions entre contrôle et résignation"}
+  - {title: "Kant et l'impératif catégorique", scope: "fondements, formulations et critiques"}
+  - {title: "Descartes et le doute méthodique", scope: "Méditations, certitude et objections"}
+  - {title: "Simone de Beauvoir et la liberté", scope: "éthique, situation et responsabilité"}
+  - {title: "Hannah Arendt et la condition humaine", scope: "travail, œuvre, action et espace public"}
 Histoire:
   - {title: "La crise de juillet 1914", scope: "chaîne diplomatique et décisions avant la Première Guerre mondiale"}
   - {title: "La bataille de la Somme en 1916", scope: "objectifs, tactiques et conséquences humaines"}

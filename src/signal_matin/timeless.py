@@ -11,7 +11,7 @@ import yaml
 from .config import ROOT, setting
 from .models import NewsItem, SourceRef
 
-TIMELESS = {"Histoire", "Mythologies & Religions"}
+TIMELESS = {"Histoire", "Mythologies & Religions", "Philosophie"}
 
 
 def topic_for_date(config: dict, category: str, date: dt.date) -> NewsItem | None:

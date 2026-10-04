@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
+import re
 import urllib.error
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -60,6 +61,19 @@ def _research_complete(materials: list[Material], tier: str, config: dict,
 def _angles(first: NewsItem) -> list[tuple[str, str]]:
     title = first.title.strip()
     historical = first.category in TIMELESS
+    if historical:
+        return [
+            (f"{title} encyclopédie université texte source primaire", "texte et présentation"),
+            (f"{title} contexte historique étude académique", "contexte historique"),
+            (f"{title} interprétations analyses universitaires", "interprétations"),
+            (f"{title} traduction œuvre originale passages documentés", "texte original"),
+            (f"{title} débats objections limites recherche", "limites et débats"),
+            (f"{title} réception histoire des idées", "réception"),
+            (f"{title} site:plato.stanford.edu OR site:iep.utm.edu", "encyclopédie philosophique"),
+            (f"{title} site:worldhistory.org OR site:britannica.com", "encyclopédie historique"),
+            (f"{title} archives musée bibliothèque", "archives"),
+            (f"{title} sources académiques comparaison", "comparaison"),
+        ]
     anchor = "archives musée université source primaire" if historical else "source officielle primaire"
     return [
         (base._search_query(first), "événement principal"),
@@ -77,9 +91,19 @@ def _angles(first: NewsItem) -> list[tuple[str, str]]:
 
 def _timeless_relevant(first: NewsItem, other: NewsItem) -> bool:
     """Rapproche un dossier intemporel sans exiger trois mots d'un titre d'actualité."""
-    anchor = base._tokens(first.title)
-    title = base._tokens(other.title)
-    body = base._tokens(other.title + " " + (other.expanded_summary or other.summary)[:1000])
+    synonyms = {"libre": "free", "arbitre": "will", "eternel": "eternal",
+                "retour": "recurrence", "absurde": "absurd", "probleme": "problem",
+                "mal": "evil", "stoicisme": "stoicism", "divertissement": "diversion",
+                "imperatif": "imperative", "categorique": "categorical", "doute": "doubt",
+                "methodique": "methodical", "liberte": "freedom", "maitrise": "mastery"}
+    def concepts(text: str) -> set[str]:
+        result = {synonyms.get(token, token) for token in base._tokens(text)}
+        if re.search(r"\bwill\b", text.casefold()):
+            result.add("will")
+        return result
+    anchor = concepts(first.title)
+    title = concepts(other.title)
+    body = concepts(other.title + " " + (other.expanded_summary or other.summary)[:1000])
     common = anchor & body
     if not common or not (anchor & title):
         return False
@@ -179,7 +203,9 @@ def _research(first: NewsItem, materials: list[Material], config: dict,
         if attempts >= maximum:
             outcome.stop_reason = "phase_limit"
             break
-        if phase == "pre-draft" and _research_complete(materials, tier, config, attempts, target):
+        if phase == "pre-draft" and (
+                _research_complete(materials, tier, config, attempts, target) or
+                (len(materials) >= 10 and base._rich_enough(materials, tier, config))):
             outcome.stop_reason = "documentary_goal_reached"
             break
         normalized = " ".join(query.casefold().split())
@@ -344,6 +370,7 @@ def write_features_v2(config: dict, date: dt.date, selected: list[str], items: l
                     continue
                 tier = base.TIERS[len(features)]
                 active_trace: ComposeTrace | None = None
+                stage = "draft"
                 try:
                     target = base.targets(config, tier)
                     row.llm_called = True
@@ -364,6 +391,8 @@ def write_features_v2(config: dict, date: dt.date, selected: list[str], items: l
                         if stop:
                             break
                         continue
+                    stage = "critique"
+                    active_trace = None
                     llm_attempts += 1
                     critique = critique_feature(draft, materials)
                     logger.info("[Critic] repetition: %.2f | continuity: %.2f | depth: %.2f | "
@@ -384,6 +413,7 @@ def write_features_v2(config: dict, date: dt.date, selected: list[str], items: l
                                   seen_queries=seen_queries)
                     base._record_material(row, materials)
                     logger.info("[Rewrite] input sources: %d", len(materials))
+                    stage = "rewrite"
                     llm_attempts += 1
                     final_trace = ComposeTrace(phase="rewrite")
                     active_trace = final_trace
@@ -411,9 +441,11 @@ def write_features_v2(config: dict, date: dt.date, selected: list[str], items: l
                     row.result, row.reason = "published", ",".join(final.shortfall_reasons)
                     break
                 except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
-                    row.result = ("article_rejected" if active_trace and
-                                  active_trace.validation == "REJET" else "writing_error")
-                    row.reason = active_trace.reason if active_trace and active_trace.reason else type(error).__name__
+                    row.result = ("article_rejected" if stage == "critique" or
+                                  (active_trace and active_trace.validation == "REJET") else "writing_error")
+                    row.reason = ("critique_invalid" if stage == "critique" else
+                                  active_trace.reason if active_trace and active_trace.reason else
+                                  type(error).__name__)
                     status = error.code if isinstance(error, urllib.error.HTTPError) else "—"
                     logger.error("[%s] erreur rédaction/API : HTTP %s | type=%s | message=%s",
                                  category, status, type(error).__name__, base._safe_error_description(error))

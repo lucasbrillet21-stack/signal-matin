@@ -364,6 +364,11 @@ def filter_tavily_hits(first: NewsItem, current: list[Material], hits: list[Sear
             reject("dossier_full")
             continue
         domain = hit.publisher.casefold()
+        if first.category in EVERGREEN_CATEGORIES and any(
+                bad in domain for bad in ("amazon.", "facebook.", "youtube.",
+                                          "instagram.", "tiktok.")):
+            reject("non_documentary_domain")
+            continue
         if any(bad in domain for bad in ("pinterest.", "quora.", "reddit.", "medium.com")):
             reject("seo_domain")
             continue
@@ -398,7 +403,7 @@ def filter_tavily_hits(first: NewsItem, current: list[Material], hits: list[Sear
                           Material(fetched.source, fetched.title, fetched.text,
                                    fetched.license_note, "tavily"))
         material = cache[key]
-        if len(material.text.strip()) < 100:
+        if len(material.text.strip()) < (300 if first.category in EVERGREEN_CATEGORIES else 100):
             reject("content_too_short")
             continue
         if any(_near_duplicate(material.text, old.text) for old in current):

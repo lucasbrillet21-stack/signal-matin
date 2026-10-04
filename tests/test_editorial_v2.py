@@ -15,7 +15,7 @@ from signal_matin.config import load_config
 from signal_matin.connectors.tavily import SearchHit, TavilyError
 from signal_matin.editorial import categories_for_date, write_features
 from signal_matin.editorial import _same_story_semantic, _international_priority, filter_tavily_hits
-from signal_matin.editorial_v2 import ResearchBudget, _research
+from signal_matin.editorial_v2 import ResearchBudget, _research, _timeless_relevant
 from signal_matin.models import (ApiCost, ArticleParagraph, EditionMeta, FeatureArticle,
                                  MorningEdition, NewsItem, RubricDiagnostic, SourceRef,
                                  DataSourceStatus, DataState)
@@ -264,12 +264,63 @@ class V2Tests(unittest.TestCase):
         myth = topic_for_date(self.config, "Mythologies & Religions", DATE)
         self.assertIsNotNone(history)
         self.assertIsNotNone(myth)
+        philosophy = topic_for_date(self.config, "Philosophie", DATE)
+        self.assertIsNotNone(philosophy)
+        self.assertIsNone(philosophy.source.url)
         self.assertIsNone(history.source.published_at)
         self.assertIsNone(history.source.url)
         self.assertIn("source factuelle", history.summary)
         remember_published("Histoire", history.title, DATE)
         later = topic_for_date(self.config, "Histoire", DATE)
         self.assertNotEqual(later.title, history.title)
+
+    def test_philosophy_research_starts_from_topic_without_recent_rss(self):
+        self.config["tavily"]["max_pre_draft_searches"] = 1
+        topic = topic_for_date(self.config, "Philosophie", DATE)
+        rows = []
+        with patch("signal_matin.editorial_v2.tavily_search", return_value=[]) as tavily, \
+             patch("signal_matin.editorial_v2.article_material") as extraction, \
+             patch("signal_matin.editorial_v2.compose_feature") as writer:
+            features = write_features(self.config, DATE, ["Philosophie"], [], diagnostics=rows)
+        self.assertEqual(features, [])
+        self.assertEqual(rows[0].candidates_tried, 1)
+        self.assertIn(topic.title, tavily.call_args.args[0])
+        extraction.assert_not_called()
+        writer.assert_not_called()
+
+    def test_philosophy_matches_documented_bilingual_subject(self):
+        first = NewsItem(title="Le libre arbitre", category="Philosophie",
+                         summary="Sujet documentaire intemporel.",
+                         source=SourceRef(name="Banque de sujets"))
+        related = NewsItem(title="Free Will - Stanford Encyclopedia of Philosophy",
+                           category=first.category, summary="Arguments about free will.",
+                           source=SourceRef(name="Stanford", url="https://plato.stanford.edu/entries/freewill/"))
+        unrelated = NewsItem(title="The Problem of Evil", category=first.category,
+                             summary="Philosophical discussion of evil.",
+                             source=SourceRef(name="Stanford", url="https://example.org/evil"))
+        self.assertTrue(_timeless_relevant(first, related))
+        self.assertFalse(_timeless_relevant(first, unrelated))
+
+    def test_timeless_source_filter_rejects_social_and_thin_snippets(self):
+        first = NewsItem(title="La Bhagavad-Gita", category="Mythologies & Religions",
+                         summary="Sujet documentaire intemporel.",
+                         source=SourceRef(name="Banque de sujets"))
+        hits = [SearchHit(title="La Bhagavad-Gita", url="https://amazon.com/book",
+                          publisher="amazon.com", content="Bhagavad Gita " * 40),
+                SearchHit(title="Bhagavad Gita - aperçu", url="https://other.org/short",
+                          publisher="other.org", content="Bhagavad Gita " * 10),
+                SearchHit(title="Bhagavad Gita - Historical Study", url="https://university.edu/gita",
+                          publisher="university.edu", content="Bhagavad Gita " * 40)]
+        decisions = []
+        with patch("signal_matin.editorial.article_material",
+                   side_effect=lambda news: Material(news.source, news.title, news.expanded_summary)):
+            kept = filter_tavily_hits(first, [], hits, relevant=_timeless_relevant,
+                                      on_decision=lambda hit, status, reason:
+                                      decisions.append((hit.publisher, status, reason)))
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].source.url.host, "university.edu")
+        self.assertIn(("amazon.com", "REJETÉ", "non_documentary_domain"), decisions)
+        self.assertIn(("other.org", "REJETÉ", "content_too_short"), decisions)
 
     def test_history_bypasses_rss_window_and_starts_with_topic(self):
         self.config["tavily"]["max_pre_draft_searches"] = 1
@@ -343,7 +394,7 @@ class V2Tests(unittest.TestCase):
 
     def test_productive_searches_can_reach_ten_call_ceiling(self):
         first = item()
-        materials = [Material(first.source, first.title, first.summary)]
+        materials = []
         budget = ResearchBudget(self.config, DATE)
         row = RubricDiagnostic(category=first.category)
         queries = [(f"{TITLE} research {i}", f"angle {i}") for i in range(10)]
@@ -358,6 +409,20 @@ class V2Tests(unittest.TestCase):
         self.assertEqual(tavily.call_count, 10)
         self.assertEqual(outcome.searches, 10)
         self.assertGreater(outcome.gain_chars, 1000)
+
+    def test_full_rich_dossier_does_not_spend_third_search(self):
+        first = item()
+        materials = [Material(SourceRef(name=f"Archive {index}",
+                                        url=f"https://archive{index}.org/study"), TITLE,
+                              "Historical context and mechanism with evidence. " * 20)
+                     for index in range(10)]
+        budget = ResearchBudget(self.config, DATE)
+        with patch("signal_matin.editorial_v2.tavily_search") as tavily:
+            outcome = _research(first, materials, self.config, budget,
+                                RubricDiagnostic(category=first.category), {}, "dossier",
+                                "pre-draft", [(TITLE, "principal")], 10, 3)
+        tavily.assert_not_called()
+        self.assertEqual(outcome.stop_reason, "documentary_goal_reached")
 
     def test_narrative_three_part_response_with_s1_references(self):
         from signal_matin.synthesis import ComposeTrace, capture_compose, compose_feature
@@ -379,6 +444,62 @@ class V2Tests(unittest.TestCase):
         self.assertEqual(len(article.sources), 1)
         self.assertEqual(article.paragraphs[0].source_ids, [1])
         self.assertEqual(trace.validation, "OK")
+
+    def test_six_distinct_dimension_headings_become_three_narrative_parts(self):
+        from signal_matin.synthesis import ComposeTrace, capture_compose, compose_feature
+        first = item()
+        response = json.loads(article_json("draft"))
+        for part, heading in zip(response["paragraphs"],
+                                 ("Faits", "Contexte", "Mécanismes", "Analyse",
+                                  "Conséquences", "Limites")):
+            part["heading"] = heading
+        trace = ComposeTrace(phase="draft")
+        with patch("signal_matin.synthesis._chat", return_value=json.dumps(response)), \
+             capture_compose(trace):
+            article = compose_feature(first.category, "dossier",
+                                      [Material(first.source, TITLE, "Documentation. " * 120)],
+                                      (450, 900), v2=True)
+        self.assertIsNotNone(article)
+        self.assertEqual(sum(bool(part.heading) for part in article.paragraphs), 3)
+        self.assertEqual(trace.validation, "OK")
+
+    def test_critic_malformed_response_reports_exact_field(self):
+        from signal_matin.synthesis import critique_feature
+        first = item()
+        material = Material(first.source, TITLE, "Documented mechanism. " * 120)
+        response = json.loads(critique_json())
+        response.pop("missing_context")
+        article = FeatureArticle(category=first.category, title=TITLE, tier="dossier",
+                                 paragraphs=[ArticleParagraph(kind="facts", text="Documented fact. " * 20,
+                                                              source_ids=[1])], sources=[first.source])
+        with patch("signal_matin.synthesis._chat", return_value=json.dumps(response)), \
+             self.assertLogs("signal_matin.synthesis") as logs:
+            with self.assertRaises(ValueError):
+                critique_feature(article, [material])
+        self.assertIn("phase=critique reason=invalid_critique field=missing_context type=missing",
+                      "\n".join(logs.output))
+
+    def test_openai_critic_request_requires_every_json_field(self):
+        from signal_matin.synthesis import critique_feature
+        first = item()
+        article = FeatureArticle(category=first.category, title=TITLE, tier="dossier",
+                                 paragraphs=[ArticleParagraph(kind="facts", text="Documented. " * 20,
+                                                              source_ids=[1])], sources=[first.source])
+        material = Material(first.source, TITLE, "Documented source. " * 100)
+        response = {"choices": [{"message": {"content": critique_json()}}]}
+        sent = []
+        def fake_open(request, timeout):
+            sent.append(json.loads(request.data))
+            return io.BytesIO(json.dumps(response).encode())
+        with patch.dict(os.environ, {"SIGNAL_MATIN_LLM_URL":
+                                       "https://api.openai.com/v1/chat/completions"}), \
+             patch("signal_matin.synthesis.urllib.request.urlopen", side_effect=fake_open):
+            critique_feature(article, [material])
+        schema = sent[0]["response_format"]["json_schema"]
+        self.assertTrue(schema["strict"])
+        self.assertEqual(set(schema["schema"]["required"]),
+                         set(schema["schema"]["properties"]))
+        self.assertFalse(schema["schema"]["additionalProperties"])
 
     def test_invalid_s7_and_missing_dimension_have_precise_safe_logs(self):
         from signal_matin.synthesis import ComposeTrace, capture_compose, compose_feature
