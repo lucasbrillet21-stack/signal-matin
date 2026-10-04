@@ -8,8 +8,8 @@ et les tests historiques conservent la chaîne précédente.
    banque sert de requête, jamais de preuve envoyée au rédacteur.
 2. Si le dossier initial est pauvre, la recherche Tavily explore des angles distincts.
    Les résultats traversent le filtre documentaire commun et gardent URL, organisme,
-   titre, date et contenu. Le dossier doit toujours atteindre 900 caractères avant
-   le premier appel LLM. La V2 s'arrête après trois recherches consécutives sans gain
+   titre, date et contenu. Le dossier doit atteindre l'objectif de richesse configuré
+   et réunir deux domaines avant le premier appel LLM. La V2 s'arrête après trois recherches consécutives sans gain
    documentaire (deux après la critique), ou dès que son objectif de richesse est
    atteint. Les plafonds de dix et cinq recherches restent des bornes de sécurité.
    Le budget de l'édition est réparti entre les rubriques prévues ; les parts non
@@ -23,7 +23,9 @@ et les tests historiques conservent la chaîne précédente.
    un identifiant stable S1, S2, etc. Le validateur vérifie les dimensions, les
    références du dossier, la longueur et les répétitions. Seules les sources citées
    sont imprimées dans le PDF. Pour GPT-4.1-mini via l'API OpenAI, la critique
-   utilise un schéma JSON strict afin que tous ses champs soient présents.
+   utilise un schéma JSON strict afin que tous ses champs soient présents. Un draft
+   trop long peut être critiqué et raccourci ; la limite de mots du texte final
+   reste bloquante.
 
 Les plafonds par article et par édition figurent dans `config.personal.example.yaml`.
 `output/state/tavily-credits.json` suit les crédits **locaux connus** du mois Sydney ;

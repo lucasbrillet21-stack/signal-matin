@@ -463,6 +463,84 @@ class V2Tests(unittest.TestCase):
         self.assertEqual(sum(bool(part.heading) for part in article.paragraphs), 3)
         self.assertEqual(trace.validation, "OK")
 
+    def test_overlong_draft_is_critiqued_but_overlong_rewrite_is_rejected(self):
+        from signal_matin.synthesis import ComposeTrace, EditorialCritique, capture_compose, compose_feature
+        first = item()
+        material = Material(first.source, TITLE, "Verified technical documentation. " * 160)
+        response_data = json.loads(article_json("draft"))
+        for index, part in enumerate(response_data["paragraphs"]):
+            part["text"] += f" Additional documented point {index}. " * 5
+        response = json.dumps(response_data)
+        trace = ComposeTrace(phase="draft")
+        with patch("signal_matin.synthesis._chat", return_value=response), capture_compose(trace):
+            draft = compose_feature(first.category, "article", [material], (450, 600), v2=True)
+        self.assertIsNotNone(draft)
+        self.assertGreater(draft.word_count(), 600)
+        self.assertEqual(trace.reason, "draft_above_word_limit")
+        critique = EditorialCritique.model_validate_json(critique_json())
+        trace = ComposeTrace(phase="rewrite")
+        with patch("signal_matin.synthesis._chat", return_value=response), capture_compose(trace):
+            final = compose_feature(first.category, "article", [material], (450, 600),
+                                    revision=(draft, critique), v2=True)
+        self.assertIsNone(final)
+        self.assertEqual(trace.reason, "above_word_limit")
+
+    def test_overlong_draft_can_be_shortened_in_full_critique_rewrite_loop(self):
+        first = item()
+        rich = Material(first.source, TITLE, "Historical context and mechanism. " * 180)
+        second = first.model_copy(update={"source": SourceRef(name="Archive",
+                                                          url="https://archive.org/artemis")})
+        other = Material(second.source, TITLE, "Independent context and impact. " * 130)
+        draft = json.loads(article_json("draft"))
+        for index, part in enumerate(draft["paragraphs"]):
+            part["text"] = (f"Verified historical context {index}, mechanism and consequence. " * 26)
+        final = json.loads(article_json("final"))
+        for index, part in enumerate(final["paragraphs"]):
+            part["text"] = (f"Verified context {index}, mechanism and consequence. " * 20)
+        rows = []
+        with patch("signal_matin.editorial_v2.article_material",
+                   side_effect=lambda news: rich if news.source.name == "NASA" else other), \
+             patch("signal_matin.synthesis._chat",
+                   side_effect=[json.dumps(draft), critique_json(), json.dumps(final)]) as chat, \
+             patch("signal_matin.editorial_v2.tavily_search"):
+            features = write_features(self.config, DATE, [first.category], [first, second], diagnostics=rows)
+        self.assertEqual(len(features), 1)
+        self.assertEqual(chat.call_count, 3)
+        self.assertEqual(rows[0].result, "published")
+        self.assertLessEqual(features[0].word_count(), 900)
+
+    def test_v2_does_not_draft_from_single_short_source(self):
+        first = item()
+        thin = Material(first.source, TITLE, "Short public brief. " * 74)
+        rows = []
+        with patch("signal_matin.editorial_v2.article_material", return_value=thin), \
+             patch("signal_matin.editorial_v2.tavily_search", return_value=[]), \
+             patch("signal_matin.editorial_v2.compose_feature") as writer:
+            features = write_features(self.config, DATE, [first.category], [first], diagnostics=rows)
+        self.assertEqual(features, [])
+        self.assertEqual(rows[0].result, "tavily_insufficient")
+        self.assertEqual(rows[0].reason, "no_results_retained")
+        writer.assert_not_called()
+
+    def test_unknown_dimension_is_ignored_only_when_required_six_remain(self):
+        from signal_matin.synthesis import ComposeTrace, capture_compose, compose_feature
+        first = item()
+        material = Material(first.source, TITLE, "Verified technical documentation. " * 120)
+        response = json.loads(article_json("draft"))
+        response["paragraphs"][0]["dimensions"] = ["facts", "autre"]
+        trace = ComposeTrace(phase="draft")
+        with patch("signal_matin.synthesis._chat", return_value=json.dumps(response)), \
+             capture_compose(trace):
+            self.assertIsNotNone(compose_feature(first.category, "dossier", [material],
+                                                  (450, 900), v2=True))
+        response["paragraphs"][0]["dimensions"] = ["autre"]
+        trace = ComposeTrace(phase="draft")
+        with patch("signal_matin.synthesis._chat", return_value=json.dumps(response)), \
+             capture_compose(trace):
+            self.assertIsNone(compose_feature(first.category, "dossier", [material],
+                                               (450, 900), v2=True))
+        self.assertEqual(trace.reason, "missing_editorial_dimension")
+
     def test_critic_malformed_response_reports_exact_field(self):
         from signal_matin.synthesis import critique_feature
         first = item()

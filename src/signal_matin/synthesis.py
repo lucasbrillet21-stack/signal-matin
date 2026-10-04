@@ -138,7 +138,11 @@ def compose_feature(
     revision_text = ""
     if revision:
         draft, critique = revision
-        revision_text = ("\n\nRÉÉCRITURE FINALE : réécris réellement l'article, supprime les "
+        revision_text = (f"\n\nRÉÉCRITURE FINALE : le draft a {draft.word_count()} mots ; "
+                         f"le texte final doit compter entre {lower} et {upper} mots, sans dépasser "
+                         f"{upper}. Si nécessaire, enlève au moins "
+                         f"{max(0, draft.word_count() - upper + 20)} mots et préserve toutes les "
+                         "dimensions documentées. Réécris réellement l'article, supprime les "
                          "répétitions, améliore les transitions, intègre les nouvelles sources et "
                          "préserve uniquement les faits correctement sourcés. Les source_ids du draft "
                          "réfèrent à draft.sources ; dans ta nouvelle réponse, source_ids doivent "
@@ -197,6 +201,21 @@ def compose_feature(
             part["source_ids"] = parsed_ids
             if not part.get("dimensions") and "kind" in part:
                 part["dimensions"] = [part["kind"]]
+            elif isinstance(part.get("dimensions"), list):
+                aliases = {"fact": "facts", "faits": "facts", "fait": "facts",
+                           "contexte": "context", "mechanism": "mechanisms",
+                           "mecanismes": "mechanisms", "mécanismes": "mechanisms",
+                           "analyse": "analysis", "consequence": "consequences",
+                           "conséquences": "consequences", "consequences": "consequences",
+                           "limites": "limits", "limit": "limits"}
+                allowed = {"facts", "context", "mechanisms", "analysis", "consequences", "limits"}
+                values = [aliases.get(value.casefold().strip(), value.casefold().strip())
+                          for value in part["dimensions"] if isinstance(value, str)]
+                removed = len(part["dimensions"]) - sum(value in allowed for value in values)
+                if removed:
+                    logger.info("[Validation] phase=%s ignored_unknown_dimensions=%d",
+                                _trace.get().phase if _trace.get() else "draft", removed)
+                part["dimensions"] = [value for value in values if value in allowed]
             normalized_parts.append(part)
         paragraphs = [ArticleParagraph.model_validate(part) for part in normalized_parts]
     except (ValueError, KeyError, TypeError, IndexError) as error:
@@ -271,6 +290,11 @@ def compose_feature(
         raise
     _mark(words=article.word_count())
     if article.word_count() > upper:
+        if v2 and revision is None:
+            _mark(validation="DRAFT_LONG", reason="draft_above_word_limit")
+            logger.info("[Validation] phase=draft words=%d target_max=%d ; passage au critique",
+                        article.word_count(), upper)
+            return article
         _mark(validation="REJET", reason="above_word_limit")
         logger.warning("%s : réponse IA rejetée, %d mots dépassent le maximum %d",
                        category, article.word_count(), upper)

@@ -357,18 +357,19 @@ def write_features_v2(config: dict, date: dt.date, selected: list[str], items: l
                                         min(10, int(setting(config, "tavily.max_pre_draft_searches", 10))),
                                         int(setting(config, "tavily.pre_draft_target_searches", 3)), seen_queries)
                 base._record_material(row, materials)
-                if row.material_chars < 900:
+                tier = base.TIERS[len(features)]
+                if not base._rich_enough(materials, tier, config):
                     row.result = "tavily_insufficient" if row.tavily_searches else "documentation_insufficient"
                     row.reason = (outcome.stop_reason if outcome.stop_reason in
                                   {"edition_or_category_budget", "monthly_credit_budget"} else
                                   "no_results_retained" if outcome.searches and outcome.retained == 0 else
-                                  "moins_de_900_caractères")
+                                  "moins_de_900_caractères" if row.material_chars < 900 else
+                                  "objectif_richesse_non_atteint")
                     previous_failure, failure_count, stop = _failure_streak(
                         category, row.reason, previous_failure, failure_count)
                     if stop or row.reason in {"edition_or_category_budget", "monthly_credit_budget"}:
                         break
                     continue
-                tier = base.TIERS[len(features)]
                 active_trace: ComposeTrace | None = None
                 stage = "draft"
                 try:
