@@ -251,6 +251,82 @@ def _same_story(first: NewsItem, hit: NewsItem) -> bool:
     return len(shared) >= 3 and len(title_shared) >= 2 and bool(shared - entity_words)
 
 
+# Vocabulaire d'événements bilingue : on rapproche les concepts, pas seulement les
+# graphies identiques. Le filtre ci-dessous garde aussi un acteur et un objet communs.
+_CONCEPTS = {
+    "strike": {"frappe", "frappes", "frapper", "strike", "strikes", "attack", "attacks", "attacked", "attaque", "attaques", "bombardement", "bombardements"},
+    "refinery": {"raffinerie", "raffineries", "refinery", "refineries", "refining"},
+    "russia": {"russie", "russe", "russes", "russian", "russians"},
+    "ukraine": {"ukraine", "ukrainien", "ukrainienne", "ukrainiennes", "ukrainiens", "ukrainian", "ukrainians"},
+    "greenland": {"groenland", "greenland", "groenlandais", "greenlandic"},
+    "mineral": {"minerai", "minerais", "minerals", "mineral", "ressources", "resources", "rare", "terres"},
+    "graphite": {"graphite"},
+    "mining": {"mine", "mines", "mining", "extraction", "extractive"},
+    "intensify": {"intensifie", "intensification", "intensified", "intensifies", "ramp", "ramps", "increase", "increased"},
+    "sanction": {"sanction", "sanctions", "embargo"},
+    "election": {"election", "elections", "élection", "élections", "electoral", "scrutin"},
+    "diplomacy": {"diplomatie", "diplomatique", "diplomatic", "diplomacy", "summit", "sommet", "negotiation", "négociation"},
+    "government": {"gouvernement", "government", "ministre", "minister", "president", "président", "parliament", "parlement"},
+    "security": {"securite", "sécurité", "security", "defense", "défense", "military", "militaire"},
+    "energy": {"energie", "énergie", "energy", "oil", "petrole", "pétrole", "gaz", "gas"},
+}
+_CONCEPT_BY_WORD = {word: concept for concept, words in _CONCEPTS.items() for word in words}
+_EVENT_ACTIONS = {"strike", "intensify", "sanction", "election", "diplomacy", "government", "security", "mining"}
+_EVENT_OBJECTS = {"refinery", "graphite", "mineral", "energy", "election", "sanction"}
+
+
+def _concept_tokens(value: str) -> set[str]:
+    return {_CONCEPT_BY_WORD.get(token, token) for token in _tokens(value)}
+
+
+def _same_story_semantic(first: NewsItem, hit: NewsItem) -> bool:
+    """Recoupement V2 : mots exacts ou acteur, action et objet bilingues concordants."""
+    distinctive = {"refinery", "graphite", "mineral", "election", "sanction"}
+    required_objects = _concept_tokens(first.title) & distinctive
+    if required_objects and not required_objects & _concept_tokens(
+            hit.title + " " + (hit.expanded_summary or hit.summary)[:1000]):
+        return False
+    if _same_story(first, hit):
+        return True
+    versions_left, versions_right = _versioned_names(first), _versioned_names(hit)
+    if any(versions_left[name] != versions_right[name] for name in versions_left.keys() & versions_right.keys()):
+        return False
+    dates_left, dates_right = _event_dates(first), _event_dates(hit)
+    if dates_left and dates_right and not dates_left & dates_right:
+        return False
+    left = _concept_tokens(first.title)
+    right = _concept_tokens(hit.title)
+    shared = left & right
+    if len(shared) < 3:
+        return False
+    if not (shared - _EVENT_ACTIONS - _EVENT_OBJECTS):
+        return False
+    if not (shared & (_EVENT_ACTIONS | _EVENT_OBJECTS)):
+        return False
+    left_objects, right_objects = left & _EVENT_OBJECTS, right & _EVENT_OBJECTS
+    if left_objects and right_objects and not left_objects & right_objects:
+        return False
+    left_actions, right_actions = left & _EVENT_ACTIONS, right & _EVENT_ACTIONS
+    if left_actions and right_actions and not left_actions & right_actions:
+        return False
+    return len(_concept_tokens(first.title + " " + first.summary[:500]) &
+               _concept_tokens(hit.title + " " + hit.summary[:500])) >= 3
+
+
+def _international_priority(item: NewsItem) -> float | None:
+    """Exige un signal géopolitique, sans liste de personnalités à exclure."""
+    title = _concept_tokens(item.title)
+    body = _concept_tokens(item.title + " " + (item.expanded_summary or item.summary)[:900])
+    geopolitics = {"strike", "sanction", "election", "diplomacy", "government", "security",
+                   "war", "guerre", "conflict", "conflit", "treaty", "traite", "frontiere", "border"}
+    culture = {"book", "livre", "edition", "publishing", "publisher", "culture", "exposition", "museum", "musée"}
+    if not (body & geopolitics):
+        return None
+    if title & culture and not title & geopolitics:
+        return None
+    return 4 * len(title & geopolitics) + len(body & geopolitics)
+
+
 def _near_duplicate(left: str, right: str) -> bool:
     def shingles(text: str) -> set[tuple[str, ...]]:
         words = re.findall(r"\w+", text.casefold())[:2000]
@@ -275,7 +351,8 @@ def _source_priority(hit: SearchHit) -> tuple[int, float]:
 def filter_tavily_hits(first: NewsItem, current: list[Material], hits: list[SearchHit],
                        cache: dict[str, Material] | None = None,
                        on_decision: Callable[[SearchHit, str, str], None] | None = None,
-                       relevant: Callable[[NewsItem, NewsItem], bool] | None = None) -> list[Material]:
+                       relevant: Callable[[NewsItem, NewsItem], bool] | None = None,
+                       max_sources: int = 5) -> list[Material]:
     """Applique le même filtrage de pertinence, de sources et de doublons que l'édition."""
     cache = cache if cache is not None else {}
     for hit in sorted(hits, key=_source_priority):
@@ -283,7 +360,7 @@ def filter_tavily_hits(first: NewsItem, current: list[Material], hits: list[Sear
             if on_decision:
                 on_decision(hit, "REJETÉ", reason)
 
-        if len(current) >= 5:
+        if len(current) >= max_sources:
             reject("dossier_full")
             continue
         domain = hit.publisher.casefold()

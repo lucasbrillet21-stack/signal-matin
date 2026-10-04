@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.request
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ComposeTrace:
+    phase: str = "draft"
     response_received: bool = False
     word_count: int = 0
     validation: str = "non démarrée"
@@ -52,6 +54,8 @@ def _mark(*, received: bool | None = None, words: int | None = None,
         trace.validation = validation
     if reason is not None:
         trace.reason = reason
+    if validation == "REJET":
+        logger.warning("[Validation] phase=%s reason=%s", trace.phase, reason or "unknown")
 
 
 def llm_configured() -> bool:
@@ -98,7 +102,11 @@ Organise le texte en environ trois grandes parties cohérentes, chacune avec un 
 unique et plusieurs paragraphes fluides si nécessaire. Couvre contexte, faits,
 mécanismes, analyse, conséquences et limites sans répéter labels ni informations.
 Ne reviens pas artificiellement aux faits déjà exposés.
-Réponds uniquement en JSON : {"title":"...","paragraphs":[{"kind":"facts|context|mechanisms|analysis|consequences|limits","heading":"titre de partie ou vide pour la suite","text":"...","source_ids":[1]}]}.
+Réponds uniquement en JSON : {"title":"...","paragraphs":[{"heading":"titre de partie ou vide pour la suite","text":"...","dimensions":["facts","context"],"source_ids":["S1"]}]}.
+Les six dimensions facts, context, mechanisms, analysis, consequences, limits doivent
+être couvertes dans l'ensemble de l'article, sans imposer six parties. Un paragraphe
+peut couvrir plusieurs dimensions. Utilise exactement les identifiants S1, S2, etc.
+qui figurent dans le dossier ; chaque affirmation factuelle doit être appuyée.
 Écris des paragraphes de 50 à 140 mots ; conserve des transitions naturelles.
 La conclusion doit exposer au moins une limite ou incertitude documentée.
 """
@@ -107,16 +115,17 @@ La conclusion doit exposer au moins une limite ou incertitude documentée.
 def compose_feature(
     category: str, tier: str, materials: list[Material], target: tuple[int, int],
     revision: tuple[FeatureArticle, "EditorialCritique"] | None = None,
+    v2: bool = False,
 ) -> FeatureArticle | None:
     """Rédige depuis des matériaux réels ; toute sortie est validée avant publication."""
     if not llm_configured() or not materials:
         _mark(validation="REJET", reason="api_non_configurée_ou_aucune_source")
         return None
     evidence = "\n\n".join(
-        f"SOURCE {index}: {material.source.name} — {material.title}\n"
+        f"SOURCE S{index}: {material.source.name} — {material.title}\n"
         f"DATE: {material.source.published_at.date().isoformat() if material.source.published_at else 'non indiquée'}\n"
         f"URL: {material.source.url}\nORIGINE: {material.origin}\nTEXTE: {material.text}"
-        for index, material in enumerate(materials[:5], 1)
+        for index, material in enumerate(materials[:10], 1)
     )
     lower, upper = target
     revision_text = ""
@@ -126,7 +135,7 @@ def compose_feature(
                          "répétitions, améliore les transitions, intègre les nouvelles sources et "
                          "préserve uniquement les faits correctement sourcés. Les source_ids du draft "
                          "réfèrent à draft.sources ; dans ta nouvelle réponse, source_ids doivent "
-                         "référer aux SOURCE numérotées du dossier ci-dessus.\n"
+                         "référer aux identifiants SOURCE S1, S2 du dossier ci-dessus.\n"
                          "DRAFT: " + draft.model_dump_json() + "\nCRITIQUE: " + critique.model_dump_json())
     category_guidance = ""
     if category == "Mythologies & Religions":
@@ -152,26 +161,76 @@ def compose_feature(
     raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     try:
         data = json.loads(raw)
-        paragraphs = [ArticleParagraph.model_validate(part) for part in data["paragraphs"]]
-    except (ValueError, KeyError, TypeError, IndexError):
-        _mark(validation="REJET", reason="invalid_json_or_structure")
+        parts = data["paragraphs"]
+        if not isinstance(parts, list) or not parts:
+            raise ValueError("paragraphs_empty_or_invalid")
+        normalized_parts = []
+        for part in parts:
+            if not isinstance(part, dict):
+                raise ValueError("paragraph_invalid")
+            part = dict(part)
+            if not isinstance(part.get("text"), str) or not part["text"].strip():
+                _mark(validation="REJET", reason="empty_section")
+                return None
+            ids = part.get("source_ids")
+            if not isinstance(ids, list):
+                _mark(validation="REJET", reason="source_ids_missing")
+                return None
+            parsed_ids = []
+            for value in ids:
+                match = re.fullmatch(r"(?:\[)?S?(\d+)(?:\])?", str(value), re.IGNORECASE)
+                if not match or not 1 <= int(match.group(1)) <= min(len(materials), 10):
+                    _mark(validation="REJET", reason="invalid_source_reference")
+                    reference = str(value) if re.fullmatch(r"\[?S?\d+\]?", str(value), re.I) else "non_numérique"
+                    logger.warning("[Validation] phase=%s reference=%s available=S1..S%d",
+                                   _trace.get().phase if _trace.get() else "draft", reference,
+                                   min(len(materials), 10))
+                    return None
+                parsed_ids.append(int(match.group(1)))
+            part["source_ids"] = parsed_ids
+            if not part.get("dimensions") and "kind" in part:
+                part["dimensions"] = [part["kind"]]
+            normalized_parts.append(part)
+        paragraphs = [ArticleParagraph.model_validate(part) for part in normalized_parts]
+    except (ValueError, KeyError, TypeError, IndexError) as error:
+        if str(error) in {"paragraphs_empty_or_invalid", "paragraph_invalid"}:
+            reason = "empty_section" if str(error) == "paragraphs_empty_or_invalid" else "malformed_response"
+            _mark(validation="REJET", reason=reason)
+            logger.warning("%s : réponse IA rejetée, %s", category, str(error))
+            return None
+        _mark(validation="REJET", reason="malformed_response")
+        if hasattr(error, "errors"):
+            for issue in error.errors():
+                logger.warning("[Validation] phase=%s field=%s type=%s",
+                               _trace.get().phase if _trace.get() else "draft",
+                               ".".join(str(x) for x in issue.get("loc", ())), issue.get("type", "invalid"))
         raise
     _mark(words=sum(len(part.text.split()) for part in paragraphs))
     headings = [part.heading.casefold() for part in paragraphs if part.heading]
     if len(headings) != len(set(headings)):
-        _mark(validation="REJET", reason="duplicate_headings")
+        _mark(validation="REJET", reason="duplicated_heading")
+        logger.warning("[Validation] phase=%s heading=%s",
+                       _trace.get().phase if _trace.get() else "draft",
+                       next(heading for heading in headings if headings.count(heading) > 1)[:100])
         return None
-    if revision and not 2 <= len(headings) <= 4:
+    if (revision or v2) and not 2 <= len(headings) <= 4:
         _mark(validation="REJET", reason="invalid_section_count")
+        return None
+    if v2 and not paragraphs[0].heading:
+        _mark(validation="REJET", reason="missing_first_heading")
         return None
     normalized = [" ".join(part.text.casefold().split()) for part in paragraphs]
     if (revision or headings) and len(normalized) != len(set(normalized)):
         _mark(validation="REJET", reason="duplicate_paragraphs")
         return None
     required = {"facts", "context", "mechanisms", "analysis", "consequences", "limits"}
-    if not required.issubset({part.kind for part in paragraphs}):
-        _mark(validation="REJET", reason="missing_sections")
-        logger.warning("%s : réponse IA rejetée, sections obligatoires manquantes", category)
+    covered = {dimension for part in paragraphs for dimension in part.dimensions}
+    if not required.issubset(covered):
+        missing = ",".join(sorted(required - covered))
+        _mark(validation="REJET", reason="missing_editorial_dimension")
+        logger.warning("[Validation] phase=%s missing=%s",
+                       _trace.get().phase if _trace.get() else "draft", missing)
+        logger.warning("%s : réponse IA rejetée, dimensions manquantes : %s", category, missing)
         return None
     for part in paragraphs:
         if not part.source_ids or any(i < 1 or i > len(materials) for i in part.source_ids):
@@ -228,8 +287,8 @@ class EditorialCritique(BaseModel):
 
 def critique_feature(article: FeatureArticle, materials: list[Material]) -> EditorialCritique:
     """Évalue le draft sans réécrire ; une sortie invalide bloque la publication."""
-    evidence = "\n".join(f"[{i}] {m.source.name} | {m.source.url} | {m.text[:12000]}"
-                         for i, m in enumerate(materials[:5], 1))
+    evidence = "\n".join(f"[S{i}] {m.source.name} | {m.source.url} | {m.text[:12000]}"
+                         for i, m in enumerate(materials[:10], 1))
     raw = _chat([
         {"role": "system", "content": (
             "Tu es critique éditorial. N'écris aucun article. Retourne uniquement un objet JSON. "

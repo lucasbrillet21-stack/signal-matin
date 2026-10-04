@@ -273,7 +273,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"JSON: {data_path}")
     if args.command == "generate" and args.email:
         if edition.personal_journal and not edition.personal_features:
-            raise SystemExit("Envoi refusé : aucun dossier personnel suffisamment documenté.")
+            causes = ", ".join(f"{row.category}: {row.result} ({row.reason or 'cause inconnue'})"
+                               for row in edition.personal_diagnostics)
+            raise SystemExit("Envoi refusé : aucun dossier personnel accepté. " + causes)
         send_pdf(pdf_path, date_label=args.date.isoformat())
         print("PDF envoyé par Gmail.")
     return 0

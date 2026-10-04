@@ -149,10 +149,11 @@ class ThoughtOfDay(Modele):
 
 
 class ArticleParagraph(Modele):
-    kind: Literal["facts", "context", "mechanisms", "analysis", "consequences", "limits"]
+    kind: Literal["facts", "context", "mechanisms", "analysis", "consequences", "limits"] = "analysis"
+    dimensions: list[Literal["facts", "context", "mechanisms", "analysis", "consequences", "limits"]] = Field(default_factory=list)
     heading: str = Field(default="", max_length=100)
     text: str = Field(min_length=1, max_length=1800)
-    source_ids: list[int] = Field(default_factory=list, max_length=8)
+    source_ids: list[int] = Field(default_factory=list, max_length=10)
 
 
 class FeatureArticle(Modele):
@@ -160,7 +161,7 @@ class FeatureArticle(Modele):
     title: str = Field(min_length=1, max_length=240)
     tier: Literal["dossier", "article", "lecture"]
     paragraphs: list[ArticleParagraph] = Field(default_factory=list, max_length=18)
-    sources: list[SourceRef] = Field(default_factory=list, max_length=8)
+    sources: list[SourceRef] = Field(default_factory=list, max_length=10)
     shortfall: bool = False
     shortfall_reasons: list[Literal["documentation_limited", "article_short"]] = Field(default_factory=list)
     attribution: str = Field(default="", max_length=240)

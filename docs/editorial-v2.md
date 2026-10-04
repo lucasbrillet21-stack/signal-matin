@@ -9,13 +9,20 @@ et les tests historiques conservent la chaîne précédente.
 2. Si le dossier initial est pauvre, la recherche Tavily explore des angles distincts.
    Les résultats traversent le filtre documentaire commun et gardent URL, organisme,
    titre, date et contenu. Le dossier doit toujours atteindre 900 caractères avant
-   le premier appel LLM.
+   le premier appel LLM. La V2 s'arrête après trois recherches consécutives sans gain
+   documentaire (deux après la critique), ou dès que son objectif de richesse est
+   atteint. Les plafonds de dix et cinq recherches restent des bornes de sécurité.
+   Le budget de l'édition est réparti entre les rubriques prévues ; les parts non
+   utilisées sont libérées après chaque rubrique.
 3. GPT-4.1 mini produit un draft, puis une critique JSON séparée. La critique ne
    rédige pas l'article. Ses requêtes éventuelles déclenchent au plus cinq recherches
    complémentaires, sans répéter une requête de la première phase.
 4. GPT-4.1 mini réécrit enfin le texte avec le draft, la critique et le dossier mis à
-   jour. Les contrôles de citations, de longueur, de sections et de doublons restent
-   bloquants. Seules les sources citées sont imprimées dans le PDF.
+   jour. Le prompt demande environ trois grandes parties et six dimensions
+   éditoriales, réparties librement entre les paragraphes. Chaque paragraphe cite
+   un identifiant stable S1, S2, etc. Le validateur vérifie les dimensions, les
+   références du dossier, la longueur et les répétitions. Seules les sources citées
+   sont imprimées dans le PDF.
 
 Les plafonds par article et par édition figurent dans `config.personal.example.yaml`.
 `output/state/tavily-credits.json` suit les crédits **locaux connus** du mois Sydney ;

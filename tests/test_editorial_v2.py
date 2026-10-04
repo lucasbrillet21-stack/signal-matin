@@ -14,6 +14,7 @@ from signal_matin.api_cost import UsageCounter, capture_usage, estimate, record_
 from signal_matin.config import load_config
 from signal_matin.connectors.tavily import SearchHit, TavilyError
 from signal_matin.editorial import categories_for_date, write_features
+from signal_matin.editorial import _same_story_semantic, _international_priority, filter_tavily_hits
 from signal_matin.editorial_v2 import ResearchBudget, _research
 from signal_matin.models import (ApiCost, ArticleParagraph, EditionMeta, FeatureArticle,
                                  MorningEdition, NewsItem, RubricDiagnostic, SourceRef,
@@ -37,8 +38,8 @@ def item():
 
 
 def hit(index: int, length: int = 1600):
-    text = (f"Artemis III incident moteur. Analyse {index} du calendrier, des essais et "
-            f"des conséquences. " * 30)
+    text = (f"Artemis III incident moteur. History and mechanism {index} of the schedule, "
+            f"testing data and impact. " * 30)
     return SearchHit(title=f"NASA reporte Artemis III après incident moteur : rapport {index}",
                      url=f"https://source{index}.org/artemis", publisher=f"source{index}.org",
                      content=(text * 10)[:length], published_at=WHEN)
@@ -79,6 +80,66 @@ class V2Tests(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
 
+    def test_multilingual_tavily_relevance_keeps_event_and_rejects_other_event(self):
+        first = NewsItem(title="L'Ukraine intensifie ses frappes contre les raffineries russes",
+                         category="International & Géopolitique",
+                         summary="Des frappes ukrainiennes visent des raffineries en Russie.",
+                         source=SourceRef(name="Euronews", url="https://euronews.com/ukraine",
+                                          published_at=WHEN))
+        matching = SearchHit(title="Ukraine ramps up strikes on Russian oil refineries",
+                             url="https://cnbc.com/refineries", publisher="cnbc.com",
+                             content="Ukraine increased strikes on Russian oil refineries. " * 12,
+                             published_at=WHEN)
+        unrelated = SearchHit(title="Ukraine announces a new education budget",
+                              url="https://other.org/education", publisher="other.org",
+                              content="Ukraine's education ministry announced school spending. " * 12,
+                              published_at=WHEN)
+        other_event = SearchHit(title="Ukraine strikes Russian military base",
+                                url="https://other.org/base", publisher="other.org",
+                                content="Ukraine attacked a Russian military base. " * 12,
+                                published_at=WHEN)
+        decisions = []
+        with patch("signal_matin.editorial.article_material",
+                   side_effect=lambda news: Material(news.source, news.title, news.expanded_summary)):
+            selected = filter_tavily_hits(first, [], [matching, unrelated, other_event],
+                                          on_decision=lambda hit, status, reason:
+                                          decisions.append((hit.url, status, reason)),
+                                          relevant=_same_story_semantic)
+        self.assertEqual([str(m.source.url) for m in selected], [matching.url])
+        self.assertEqual([reason for _, status, reason in decisions if status == "REJETÉ"],
+                         ["irrelevant", "irrelevant"])
+
+    def test_greenland_graphite_result_needs_graphite_evidence(self):
+        first = NewsItem(title="Le Groenland et ses ressources en graphite et minerais critiques",
+                         category="International & Géopolitique",
+                         summary="Le Groenland examine les ressources minières et le graphite.",
+                         source=SourceRef(name="Euronews", url="https://euronews.com/greenland",
+                                          published_at=WHEN))
+        related = NewsItem(title="Greenland graphite deposits attract critical minerals interest",
+                           category=first.category,
+                           summary="Greenland graphite resources and mineral development are discussed.",
+                           source=SourceRef(name="Source", url="https://example.org/graphite",
+                                            published_at=WHEN))
+        other_mineral = NewsItem(title="Greenland rare earth mining project",
+                                 category=first.category,
+                                 summary="A separate Greenland rare earth extraction project.",
+                                 source=SourceRef(name="Source", url="https://example.org/rare-earth",
+                                                  published_at=WHEN))
+        self.assertTrue(_same_story_semantic(first, related))
+        self.assertFalse(_same_story_semantic(first, other_mineral))
+
+    def test_international_ranking_excludes_royal_publishing_subject(self):
+        cultural = NewsItem(title="Une personnalité royale lance un projet dans l'édition",
+                            category="International & Géopolitique",
+                            summary="Le nouveau livre concerne le secteur culturel britannique.",
+                            source=SourceRef(name="RSS", url="https://example.org/book"))
+        diplomatic = NewsItem(title="Des gouvernements négocient un accord de sécurité",
+                              category=cultural.category,
+                              summary="Une négociation diplomatique internationale se poursuit.",
+                              source=SourceRef(name="RSS", url="https://example.org/diplomacy"))
+        self.assertIsNone(_international_priority(cultural))
+        self.assertGreater(_international_priority(diplomatic), 0)
+
     def test_pre_draft_stops_early_when_complete(self):
         from signal_matin.editorial_v2 import _angles
         first = item()
@@ -93,10 +154,10 @@ class V2Tests(unittest.TestCase):
              patch("signal_matin.editorial.article_material", side_effect=material_for):
             _research(first, materials, self.config, budget, rows, {}, "dossier",
                       "pre-draft", _angles(first), 10, 3)
-        self.assertEqual(tavily.call_count, 3)
+        self.assertEqual(tavily.call_count, 2)
         self.assertGreaterEqual(len(materials), 3)
 
-    def test_poor_documentation_tries_at_most_ten_angles_and_no_llm(self):
+    def test_poor_documentation_stops_after_three_empty_angles_and_no_llm(self):
         first = item()
         rows = []
         def material_for(news):
@@ -106,8 +167,8 @@ class V2Tests(unittest.TestCase):
              patch("signal_matin.editorial_v2.compose_feature") as writer:
             features = write_features(self.config, DATE, ["Ingénierie"], [first], diagnostics=rows)
         self.assertEqual(features, [])
-        self.assertEqual(tavily.call_count, 10)
-        self.assertEqual(rows[0].tavily_searches, 10)
+        self.assertEqual(tavily.call_count, 3)
+        self.assertEqual(rows[0].tavily_searches, 3)
         writer.assert_not_called()
 
     def test_critique_without_more_research_and_real_rewrite(self):
@@ -133,7 +194,7 @@ class V2Tests(unittest.TestCase):
         self.assertEqual(rows[0].result, "published")
         self.assertIsNone(costs[0].total_usd)  # mock sans usage API
 
-    def test_post_critique_uses_only_five_new_queries(self):
+    def test_post_critique_stops_after_two_empty_queries(self):
         first = item()
         rich = Material(first.source, first.title, "Document technique détaillé. " * 160)
         other = Material(SourceRef(name="Agence", url="https://agency.org/report"),
@@ -147,8 +208,8 @@ class V2Tests(unittest.TestCase):
              patch("signal_matin.editorial_v2.tavily_search", return_value=[]) as tavily:
             features = write_features(self.config, DATE, ["Ingénierie"], [first, second])
         self.assertEqual(len(features), 1)
-        self.assertEqual(tavily.call_count, 5)
-        self.assertEqual(len({call.args[0] for call in tavily.call_args_list}), 5)
+        self.assertEqual(tavily.call_count, 2)
+        self.assertEqual(len({call.args[0] for call in tavily.call_args_list}), 2)
 
     def test_post_critique_never_repeats_pre_draft_query(self):
         first = item()
@@ -269,6 +330,102 @@ class V2Tests(unittest.TestCase):
         self.assertEqual(second.ledger.used(), 2)
         self.assertTrue(ResearchBudget(self.config, dt.date(2026, 11, 1)).reserve())
 
+    def test_edition_budget_reserves_each_rubric_and_releases_unused(self):
+        categories = ["Ingénierie", "Économie", "Histoire"]
+        budget = ResearchBudget(self.config, DATE, categories)
+        self.assertEqual(budget.limit, 30)
+        self.assertEqual(sum(budget.reserve(categories[0]) for _ in range(30)), 10)
+        self.assertEqual(budget.last_denial, "edition_or_category_budget")
+        self.assertTrue(budget.reserve(categories[1]))
+        budget.release(categories[1])
+        self.assertEqual(sum(budget.reserve(categories[2]) for _ in range(30)), 19)
+        self.assertEqual(budget.used, 30)
+
+    def test_productive_searches_can_reach_ten_call_ceiling(self):
+        first = item()
+        materials = [Material(first.source, first.title, first.summary)]
+        budget = ResearchBudget(self.config, DATE)
+        row = RubricDiagnostic(category=first.category)
+        queries = [(f"{TITLE} research {i}", f"angle {i}") for i in range(10)]
+        results = [[hit(i, 500)] for i in range(10)]
+        with patch("signal_matin.editorial_v2.tavily_search", side_effect=results) as tavily, \
+             patch("signal_matin.editorial.article_material",
+                   side_effect=lambda news: Material(news.source, news.title,
+                                                     news.expanded_summary or news.summary)), \
+             patch("signal_matin.editorial_v2._research_complete", return_value=False):
+            outcome = _research(first, materials, self.config, budget, row, {}, "dossier",
+                                "pre-draft", queries, 10, 3)
+        self.assertEqual(tavily.call_count, 10)
+        self.assertEqual(outcome.searches, 10)
+        self.assertGreater(outcome.gain_chars, 1000)
+
+    def test_narrative_three_part_response_with_s1_references(self):
+        from signal_matin.synthesis import ComposeTrace, capture_compose, compose_feature
+        first = item()
+        materials = [Material(first.source, TITLE, "History, facts and analysis. " * 130)]
+        response = {"title": TITLE, "paragraphs": [
+            {"heading": heading, "text": (f"{heading} documented account. " * 40),
+             "dimensions": dimensions, "source_ids": ["S1"]}
+            for heading, dimensions in [
+                ("Contexte et faits", ["context", "facts"]),
+                ("Mécanismes et enjeux", ["mechanisms", "analysis"]),
+                ("Conséquences et limites", ["consequences", "limits"]),
+            ]]}
+        trace = ComposeTrace(phase="draft")
+        with patch("signal_matin.synthesis._chat", return_value=json.dumps(response)), \
+             capture_compose(trace):
+            article = compose_feature(first.category, "dossier", materials, (180, 900), v2=True)
+        self.assertIsNotNone(article)
+        self.assertEqual(len(article.sources), 1)
+        self.assertEqual(article.paragraphs[0].source_ids, [1])
+        self.assertEqual(trace.validation, "OK")
+
+    def test_invalid_s7_and_missing_dimension_have_precise_safe_logs(self):
+        from signal_matin.synthesis import ComposeTrace, capture_compose, compose_feature
+        first = item()
+        materials = [Material(first.source, TITLE, "History and facts. " * 100)]
+        response = json.loads(article_json("draft"))
+        response["paragraphs"][0]["source_ids"] = ["S7"]
+        trace = ComposeTrace(phase="draft")
+        with patch("signal_matin.synthesis._chat", return_value=json.dumps(response)), \
+             capture_compose(trace), self.assertLogs("signal_matin.synthesis") as logs:
+            self.assertIsNone(compose_feature(first.category, "dossier", materials,
+                                               (180, 900), v2=True))
+        self.assertEqual(trace.reason, "invalid_source_reference")
+        self.assertIn("reference=S7 available=S1..S1", "\n".join(logs.output))
+        self.assertNotIn("secret-llm-v2", "\n".join(logs.output))
+        response["paragraphs"][0]["source_ids"] = ["S1"]
+        response["paragraphs"].pop()
+        trace = ComposeTrace(phase="rewrite")
+        with patch("signal_matin.synthesis._chat", return_value=json.dumps(response)), \
+             capture_compose(trace), self.assertLogs("signal_matin.synthesis") as logs:
+            self.assertIsNone(compose_feature(first.category, "dossier", materials,
+                                               (180, 900), v2=True))
+        self.assertEqual(trace.reason, "missing_editorial_dimension")
+        self.assertIn("missing=limits", "\n".join(logs.output))
+
+    def test_empty_section_and_duplicate_heading_are_named(self):
+        from signal_matin.synthesis import ComposeTrace, capture_compose, compose_feature
+        first = item()
+        materials = [Material(first.source, TITLE, "Document technique vérifié. " * 100)]
+        response = json.loads(article_json("draft"))
+        response["paragraphs"][0]["text"] = "   "
+        trace = ComposeTrace(phase="draft")
+        with patch("signal_matin.synthesis._chat", return_value=json.dumps(response)), \
+             capture_compose(trace):
+            self.assertIsNone(compose_feature(first.category, "dossier", materials,
+                                               (180, 900), v2=True))
+        self.assertEqual(trace.reason, "empty_section")
+        response = json.loads(article_json("draft"))
+        response["paragraphs"][2]["heading"] = response["paragraphs"][0]["heading"]
+        trace = ComposeTrace(phase="rewrite")
+        with patch("signal_matin.synthesis._chat", return_value=json.dumps(response)), \
+             capture_compose(trace), self.assertLogs("signal_matin.synthesis") as logs:
+            self.assertIsNone(compose_feature(first.category, "dossier", materials,
+                                               (180, 900), v2=True))
+        self.assertEqual(trace.reason, "duplicated_heading")
+        self.assertIn("phase=rewrite heading=contexte et faits", "\n".join(logs.output).casefold())
+
     def test_logs_never_include_secrets(self):
         first = item()
         with patch("signal_matin.editorial_v2.article_material",
@@ -280,6 +437,22 @@ class V2Tests(unittest.TestCase):
         text = "\n".join(logs.output)
         self.assertNotIn("secret-llm-v2", text)
         self.assertNotIn("secret-tavily-v2", text)
+
+    def test_email_exit_one_only_when_no_accepted_article(self):
+        from signal_matin.cli import main
+        row = RubricDiagnostic(category="Ingénierie", result="article_rejected",
+                               reason="missing_editorial_dimension")
+        edition = MorningEdition(generated_at=WHEN, demo=False, personal_journal=True,
+                                 edition=EditionMeta(date=DATE, number=1, title="V2"),
+                                 personal_diagnostics=[row])
+        with patch("signal_matin.cli._edition", return_value=edition), \
+             patch("signal_matin.cli.ecrire_edition"), patch("signal_matin.cli.write_html"), \
+             patch("signal_matin.cli.generer_pdf"), patch("signal_matin.cli.send_pdf") as email:
+            with self.assertRaises(SystemExit) as raised:
+                main(["generate", "--config", "config.personal.example.yaml", "--live",
+                      "--date", DATE.isoformat(), "--output", self.temp.name, "--email"])
+        self.assertIn("article_rejected (missing_editorial_dimension)", str(raised.exception))
+        email.assert_not_called()
 
     def test_theoretical_cost_appears_on_last_pdf_page(self):
         source = SourceRef(name="NASA", title=TITLE, url="https://nasa.gov/original")
