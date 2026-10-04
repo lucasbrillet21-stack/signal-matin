@@ -25,7 +25,9 @@ et les tests historiques conservent la chaîne précédente.
    sont imprimées dans le PDF. Pour GPT-4.1-mini via l'API OpenAI, la critique
    utilise un schéma JSON strict afin que tous ses champs soient présents. Un draft
    trop long peut être critiqué et raccourci ; la limite de mots du texte final
-   reste bloquante.
+   reste bloquante. Si la première réécriture dépasse encore cette limite, une seule
+   passe de compression reprend le dossier et ses citations ; un second dépassement
+   rejette l'article.
 
 Les plafonds par article et par édition figurent dans `config.personal.example.yaml`.
 `output/state/tavily-credits.json` suit les crédits **locaux connus** du mois Sydney ;

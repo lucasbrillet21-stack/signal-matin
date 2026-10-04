@@ -509,6 +509,30 @@ class V2Tests(unittest.TestCase):
         self.assertEqual(rows[0].result, "published")
         self.assertLessEqual(features[0].word_count(), 900)
 
+    def test_overlong_rewrite_gets_one_bounded_compression_pass(self):
+        first = item()
+        second = first.model_copy(update={"source": SourceRef(name="Archive",
+                                                          url="https://archive.org/artemis")})
+        materials = {"NASA": Material(first.source, TITLE, "Historical context. " * 180),
+                     "Archive": Material(second.source, TITLE, "Independent mechanism. " * 180)}
+        overlong = json.loads(article_json("long"))
+        compressed = json.loads(article_json("compressed"))
+        for index, part in enumerate(overlong["paragraphs"]):
+            part["text"] = f"Documented detail {index} with context and mechanism. " * 26
+        for index, part in enumerate(compressed["paragraphs"]):
+            part["text"] = f"Documented detail {index} with context and mechanism. " * 18
+        with patch("signal_matin.editorial_v2.article_material",
+                   side_effect=lambda news: materials[news.source.name]), \
+             patch("signal_matin.synthesis._chat",
+                   side_effect=[article_json("draft"), critique_json(),
+                                json.dumps(overlong), json.dumps(compressed)]) as chat, \
+             patch("signal_matin.editorial_v2.tavily_search"):
+            features = write_features(self.config, DATE, [first.category], [first, second])
+        self.assertEqual(len(features), 1)
+        self.assertEqual(chat.call_count, 4)
+        self.assertLessEqual(features[0].word_count(), 900)
+        self.assertIn("COMPRESSION FINALE OBLIGATOIRE", chat.call_args.args[0][-1]["content"])
+
     def test_v2_does_not_draft_from_single_short_source(self):
         first = item()
         thin = Material(first.source, TITLE, "Short public brief. " * 74)

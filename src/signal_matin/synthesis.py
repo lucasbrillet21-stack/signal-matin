@@ -123,6 +123,8 @@ def compose_feature(
     category: str, tier: str, materials: list[Material], target: tuple[int, int],
     revision: tuple[FeatureArticle, "EditorialCritique"] | None = None,
     v2: bool = False,
+    return_overflow: bool = False,
+    compression: bool = False,
 ) -> FeatureArticle | None:
     """Rédige depuis des matériaux réels ; toute sortie est validée avant publication."""
     if not llm_configured() or not materials:
@@ -148,6 +150,13 @@ def compose_feature(
                          "réfèrent à draft.sources ; dans ta nouvelle réponse, source_ids doivent "
                          "référer aux identifiants SOURCE S1, S2 du dossier ci-dessus.\n"
                          "DRAFT: " + draft.model_dump_json() + "\nCRITIQUE: " + critique.model_dump_json())
+        if compression:
+            aim = lower + (upper - lower) // 3
+            revision_text += (f"\nCOMPRESSION FINALE OBLIGATOIRE : l'essai précédent a "
+                              f"{draft.word_count()} mots. Vise au plus {aim} mots, tout en restant "
+                              f"au-dessus du minimum de sécurité ; {upper} est un plafond absolu. "
+                              "Retire les détails secondaires et les répétitions ; garde les faits "
+                              "indispensables, les six dimensions et leurs citations.")
     category_guidance = ""
     if category == "Mythologies & Religions":
         category_guidance = ("Approche descriptive, historique, comparative si pertinent et non "
@@ -290,10 +299,13 @@ def compose_feature(
         raise
     _mark(words=article.word_count())
     if article.word_count() > upper:
-        if v2 and revision is None:
-            _mark(validation="DRAFT_LONG", reason="draft_above_word_limit")
-            logger.info("[Validation] phase=draft words=%d target_max=%d ; passage au critique",
-                        article.word_count(), upper)
+        if v2 and (revision is None or return_overflow):
+            phase = "draft" if revision is None else "rewrite"
+            _mark(validation="DRAFT_LONG" if revision is None else "REWRITE_LONG",
+                  reason=f"{phase}_above_word_limit")
+            logger.info("[Validation] phase=%s words=%d target_max=%d ; %s",
+                        phase, article.word_count(), upper,
+                        "passage au critique" if revision is None else "compression nécessaire")
             return article
         _mark(validation="REJET", reason="above_word_limit")
         logger.warning("%s : réponse IA rejetée, %d mots dépassent le maximum %d",

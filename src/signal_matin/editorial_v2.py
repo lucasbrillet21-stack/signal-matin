@@ -420,7 +420,19 @@ def write_features_v2(config: dict, date: dt.date, selected: list[str], items: l
                     active_trace = final_trace
                     with capture_compose(final_trace):
                         final = compose_feature(category, tier, materials, target,
-                                                revision=(draft, critique), v2=True)
+                                                revision=(draft, critique), v2=True,
+                                                return_overflow=True)
+                    if final is not None and final.word_count() > target[1]:
+                        logger.info("[Rewrite] compression : %d mots pour un maximum de %d",
+                                    final.word_count(), target[1])
+                        llm_attempts += 1
+                        compression_trace = ComposeTrace(phase="compression")
+                        active_trace = compression_trace
+                        with capture_compose(compression_trace):
+                            final = compose_feature(category, tier, materials, target,
+                                                    revision=(final, critique), v2=True,
+                                                    compression=True)
+                        final_trace = compression_trace
                     if final is None:
                         row.result, row.reason = "article_rejected", final_trace.reason or "rewrite_invalide"
                         logger.info("[Rewrite] final words: %d | validation: REJET | raison=%s",
