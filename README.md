@@ -82,6 +82,17 @@ avec les sources déjà obtenues.
 Si un ancien `config.yaml` local existe déjà, recopie le bloc `tavily` de
 `config.personal.example.yaml` ou utilise directement cet exemple avec `--config`.
 
+Dans le profil V2 de l'exemple, ces anciennes limites par article ne s'appliquent
+pas : le plafond est de 10 recherches avant rédaction, 5 après critique et 30
+pour l'édition, avec un budget mensuel local de 1 500 crédits. Lorsque l'URL
+OpenAI et `gpt-4.1-mini` sont configurés, un seul appel compare les candidats
+des rubriques avant Tavily. Il classe leur intérêt, leur potentiel de profondeur
+et de documentation, écarte les sujets jugés faibles et propose au plus deux
+requêtes ciblées par candidat retenu. La rédaction exige toujours des sources
+indépendantes et une quantité minimale de matière. Si cette présélection échoue,
+le classement local reprend. Elle peut être désactivée en mettant
+`enabled: false` sous `editorial → v2 → selection`.
+
 ### Rédaction longue par API
 
 `synthesis.enabled` est actif dans le profil personnel. Renseigne dans `.env`

@@ -23,7 +23,7 @@ from signal_matin.renderer import render_html
 from signal_matin.source_material import Material
 from signal_matin.source_material import _ArticleParser, wikipedia_material
 from signal_matin.synthesis import _chat, compose_feature
-from signal_matin.thought import thought_for_date
+from signal_matin.thought import remember_thought, thought_for_date
 
 
 BASE = dt.date(2026, 9, 28)  # lundi
@@ -362,6 +362,33 @@ class PersonalTests(unittest.TestCase):
         self.assertEqual(len({thought.text for thought in thoughts}), 7)
         self.assertTrue(all(150 <= len(thought.explanation.split()) <= 200 for thought in thoughts))
         self.assertTrue(all(thought.source_url for thought in thoughts))
+        catalog = json.loads((Path(__file__).parents[1] / "src" / "signal_matin" /
+                              "quotes.json").read_text(encoding="utf-8"))
+        self.assertTrue(all(150 <= len((entry["explanation"] + " " +
+                                          entry.get("expansion", "")).split()) <= 200
+                            for entry in catalog if entry.get("verified")))
+
+    def test_quote_history_avoids_repetition_and_varies_authors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "quotes.json"
+            thoughts = []
+            catalog = json.loads((Path(__file__).resolve().parents[1] /
+                                  "src" / "signal_matin" / "quotes.json").read_text(encoding="utf-8"))
+            catalog_size = sum(quote.get("verified") is True for quote in catalog)
+            for offset in range(catalog_size):
+                day = BASE + dt.timedelta(days=offset)
+                thought = thought_for_date(day, history_path=path)
+                thoughts.append(thought)
+                remember_thought(day, thought, history_path=path)
+            self.assertEqual(len({thought.text for thought in thoughts}), catalog_size)
+            self.assertGreaterEqual(len({thought.author for thought in thoughts}), 18)
+            self.assertLessEqual(sum(left.author == right.author
+                                     for left, right in zip(thoughts, thoughts[1:])), 1)
+            self.assertEqual(thought_for_date(BASE + dt.timedelta(days=catalog_size - 1),
+                                              history_path=path).text, thoughts[-1].text)
+            following = thought_for_date(BASE + dt.timedelta(days=catalog_size), history_path=path)
+            self.assertIn(following.text, {thought.text for thought in thoughts})
+            self.assertNotEqual(following.author, thoughts[-1].author)
 
     def test_documented_source_material(self):
         parser = _ArticleParser()

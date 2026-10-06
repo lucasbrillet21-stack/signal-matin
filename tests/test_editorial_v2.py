@@ -13,16 +13,16 @@ from pypdf import PdfReader
 from signal_matin.api_cost import UsageCounter, capture_usage, estimate, record_llm_usage
 from signal_matin.config import load_config
 from signal_matin.connectors.tavily import SearchHit, TavilyError
-from signal_matin.editorial import categories_for_date, write_features
+from signal_matin.editorial import categories_for_date, fallback_categories, write_features
 from signal_matin.editorial import _same_story_semantic, _international_priority, filter_tavily_hits
-from signal_matin.editorial_v2 import ResearchBudget, _research, _timeless_relevant
+from signal_matin.editorial_v2 import ResearchBudget, _research, _select_candidates, _timeless_relevant
 from signal_matin.models import (ApiCost, ArticleParagraph, EditionMeta, FeatureArticle,
                                  MorningEdition, NewsItem, RubricDiagnostic, SourceRef,
                                  DataSourceStatus, DataState)
 from signal_matin.pdf import generer_pdf
 from signal_matin.pipeline import build_live
 from signal_matin.source_material import Material
-from signal_matin.timeless import remember_published, topic_for_date
+from signal_matin.timeless import remember_published, topic_for_date, topics_for_date
 
 
 DATE = dt.date(2026, 10, 1)
@@ -157,7 +157,7 @@ class V2Tests(unittest.TestCase):
         self.assertEqual(tavily.call_count, 2)
         self.assertGreaterEqual(len(materials), 3)
 
-    def test_poor_documentation_stops_after_three_empty_angles_and_no_llm(self):
+    def test_poor_documentation_uses_bounded_fallback_queries_and_no_llm(self):
         first = item()
         rows = []
         def material_for(news):
@@ -167,9 +167,82 @@ class V2Tests(unittest.TestCase):
              patch("signal_matin.editorial_v2.compose_feature") as writer:
             features = write_features(self.config, DATE, ["Ingénierie"], [first], diagnostics=rows)
         self.assertEqual(features, [])
-        self.assertEqual(tavily.call_count, 3)
-        self.assertEqual(rows[0].tavily_searches, 3)
+        self.assertEqual(tavily.call_count, 2)
+        self.assertEqual(rows[0].tavily_searches, 2)
         writer.assert_not_called()
+
+    def test_pre_draft_queries_are_not_stopped_by_two_empty_results(self):
+        first = item()
+        row = RubricDiagnostic(category=first.category)
+        queries = [(f"{TITLE} angle {index}", f"angle {index}") for index in range(3)]
+        with patch("signal_matin.editorial_v2.tavily_search", return_value=[]) as tavily:
+            outcome = _research(first, [], self.config, ResearchBudget(self.config, DATE),
+                                row, {}, "dossier", "pre-draft", queries, 3, 3)
+        self.assertEqual(tavily.call_count, 3)
+        self.assertEqual(outcome.searches, 3)
+
+    def test_model_selection_ranks_candidates_and_supplies_targeted_queries(self):
+        first = item()
+        second = first.model_copy(update={"title": "Une nouvelle méthode de stockage solaire",
+                                          "summary": "Une étude décrit une méthode de stockage solaire.",
+                                          "source": SourceRef(name="Revue", url="https://example.org/solar",
+                                                              published_at=WHEN)})
+        entries = [
+            {"id": "Ingénierie:0", "recommend": False, "interest": 0.2, "depth": 0.3,
+             "documentability": 0.4, "angle": "report", "gap": "chronologie",
+             "search_queries": ["Artemis chronologie"]},
+            {"id": "Ingénierie:1", "recommend": True, "interest": 0.9, "depth": 0.8,
+             "documentability": 0.8, "angle": "fonctionnement du stockage",
+             "gap": "étude primaire", "search_queries": ["stockage solaire étude primaire"]},
+        ]
+        with patch("signal_matin.editorial_v2._chat",
+                   return_value=json.dumps({"candidates": entries})) as chat:
+            ranked, queries = _select_candidates({"Ingénierie": [first, second]})
+        self.assertIs(ranked["Ingénierie"][0], second)
+        self.assertEqual(len(ranked["Ingénierie"]), 1)
+        self.assertEqual(queries[id(second)], [("stockage solaire étude primaire", "étude primaire")])
+        schema = chat.call_args.kwargs["response_format"]["json_schema"]
+        self.assertTrue(schema["strict"])
+        self.assertFalse(schema["schema"]["additionalProperties"])
+
+    def test_model_selection_is_one_call_before_tavily_and_invalid_result_falls_back(self):
+        first = item()
+        self.config["tavily"]["max_searches_per_edition"] = 1
+        with patch.dict(os.environ, {"SIGNAL_MATIN_LLM_URL":
+                                       "https://api.openai.com/v1/chat/completions"}), \
+             patch("signal_matin.editorial_v2._chat", return_value='{"candidates": []}') as selector, \
+             patch("signal_matin.editorial_v2.article_material",
+                   return_value=Material(first.source, first.title, first.summary)), \
+             patch("signal_matin.editorial_v2.tavily_search", return_value=[]) as tavily:
+            features = write_features(self.config, DATE, ["Ingénierie"], [first])
+        self.assertEqual(features, [])
+        self.assertEqual(selector.call_count, 1)
+        self.assertEqual(tavily.call_count, 1)
+
+    def test_model_rejection_prevents_search_on_uninteresting_candidate(self):
+        first = item()
+        second = first.model_copy(update={"title": "Une nouvelle méthode de stockage solaire",
+                                          "summary": "Une étude décrit une méthode de stockage solaire.",
+                                          "source": SourceRef(name="Revue", url="https://example.org/solar",
+                                                              published_at=WHEN)})
+        choices = [
+            {"id": "Ingénierie:0", "recommend": False, "interest": 0.1, "depth": 0.2,
+             "documentability": 0.2, "angle": "", "gap": "sujet limité", "search_queries": []},
+            {"id": "Ingénierie:1", "recommend": True, "interest": 0.9, "depth": 0.8,
+             "documentability": 0.8, "angle": "méthode et limites", "gap": "étude primaire",
+             "search_queries": ["stockage solaire étude primaire"]},
+        ]
+        self.config["tavily"]["max_searches_per_edition"] = 1
+        with patch.dict(os.environ, {"SIGNAL_MATIN_LLM_URL":
+                                       "https://api.openai.com/v1/chat/completions"}), \
+             patch("signal_matin.editorial_v2._chat",
+                   return_value=json.dumps({"candidates": choices})), \
+             patch("signal_matin.editorial_v2.article_material",
+                   side_effect=lambda news: Material(news.source, news.title, news.summary)), \
+             patch("signal_matin.editorial_v2.tavily_search", return_value=[]) as tavily:
+            write_features(self.config, DATE, ["Ingénierie"], [first, second])
+        self.assertEqual(tavily.call_count, 1)
+        self.assertEqual(tavily.call_args.args[0], "stockage solaire étude primaire")
 
     def test_critique_without_more_research_and_real_rewrite(self):
         first = item()
@@ -194,7 +267,7 @@ class V2Tests(unittest.TestCase):
         self.assertEqual(rows[0].result, "published")
         self.assertIsNone(costs[0].total_usd)  # mock sans usage API
 
-    def test_post_critique_stops_after_two_empty_queries(self):
+    def test_post_critique_does_not_repeat_a_failed_gap(self):
         first = item()
         rich = Material(first.source, first.title, "Document technique détaillé. " * 160)
         other = Material(SourceRef(name="Agence", url="https://agency.org/report"),
@@ -208,8 +281,8 @@ class V2Tests(unittest.TestCase):
              patch("signal_matin.editorial_v2.tavily_search", return_value=[]) as tavily:
             features = write_features(self.config, DATE, ["Ingénierie"], [first, second])
         self.assertEqual(len(features), 1)
-        self.assertEqual(tavily.call_count, 2)
-        self.assertEqual(len({call.args[0] for call in tavily.call_args_list}), 2)
+        self.assertEqual(tavily.call_count, 1)
+        self.assertEqual(tavily.call_args.args[0], queries[0])
 
     def test_post_critique_never_repeats_pre_draft_query(self):
         first = item()
@@ -258,6 +331,10 @@ class V2Tests(unittest.TestCase):
                          (1, 123, 45))
 
     def test_timeless_topics_and_recent_history(self):
+        fallback = fallback_categories(self.config, ["Sciences & Curiosités", "Ingénierie",
+                                                     "Intelligence artificielle"])
+        self.assertIn("Histoire", fallback)
+        self.assertLess(fallback.index("Histoire"), fallback.index("Culture"))
         self.assertEqual(categories_for_date(self.config, dt.date(2026, 10, 4))[-1],
                          "Mythologies & Religions")
         history = topic_for_date(self.config, "Histoire", DATE)
@@ -273,6 +350,7 @@ class V2Tests(unittest.TestCase):
         remember_published("Histoire", history.title, DATE)
         later = topic_for_date(self.config, "Histoire", DATE)
         self.assertNotEqual(later.title, history.title)
+        self.assertGreater(len(topics_for_date(self.config, "Histoire", DATE)), 1)
 
     def test_philosophy_research_starts_from_topic_without_recent_rss(self):
         self.config["tavily"]["max_pre_draft_searches"] = 1

@@ -58,6 +58,7 @@ jobs:
           path: |
             output/state/tavily-credits.json
             output/state/timeless-topics.json
+            output/state/quote-history.json
           key: signal-matin-state-${{ github.run_id }}
           restore-keys: |
             signal-matin-state-
@@ -70,6 +71,9 @@ jobs:
           fi
           if [ ! -f output/state/timeless-topics.json ]; then
             printf '{}\n' > output/state/timeless-topics.json
+          fi
+          if [ ! -f output/state/quote-history.json ]; then
+            printf '[]\n' > output/state/quote-history.json
           fi
       - name: Générer et envoyer le PDF
         if: steps.ready.outputs.ready == 'true'
@@ -96,4 +100,5 @@ jobs:
           path: |
             output/state/tavily-credits.json
             output/state/timeless-topics.json
+            output/state/quote-history.json
           key: signal-matin-state-${{ github.run_id }}

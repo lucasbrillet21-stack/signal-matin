@@ -17,7 +17,7 @@ from .models import (
     Recommendation, RubricDiagnostic, ApiCost, SourceRef,
 )
 from .normalizer import normaliser_edition
-from .thought import thought_for_date
+from .thought import quote_history_path, thought_for_date
 from .editorial import categories_for_date, fallback_categories, local_date, write_features
 
 
@@ -224,7 +224,7 @@ def _build_personal(config: dict, now: dt.datetime, mode: str) -> MorningEdition
         api_cost=costs[0] if costs else ApiCost(
             model=os.environ.get("SIGNAL_MATIN_LLM_MODEL", ""),
             input_tokens=None, output_tokens=None, total_usd=None),
-        thought=thought_for_date(date),
+        thought=thought_for_date(date, history_path=quote_history_path()),
         personal=PersonalBlock(greeting="Bonjour. Voici les informations sourcées du jour."),
     )
     return normaliser_edition(edition, mode="standard" if mode == "auto" else mode)

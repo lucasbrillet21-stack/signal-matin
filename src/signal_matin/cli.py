@@ -28,6 +28,7 @@ from .pdf import generer_pdf
 from .pipeline import build_live
 from .printer import print_pdf
 from .renderer import write_html
+from .thought import remember_thought
 
 
 def _date(value: str) -> dt.date:
@@ -258,6 +259,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Preview generee: {html_path}")
         return 0
     generer_pdf(edition, pdf_path, html_path=html_path)
+    if args.command == "generate" and edition.personal_journal and edition.thought:
+        remember_thought(edition.edition.date, edition.thought)
     if args.command == "print":
         printer = args.printer or str(setting(config, "printing.printer", "") or "")
         duplex = args.duplex or bool(setting(config, "printing.duplex", False))

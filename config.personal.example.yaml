@@ -48,7 +48,9 @@ api_cost:
   tavily_usd_per_credit: 0.008
 editorial:
   timezone: "Australia/Sydney"
-  v2: {enabled: true}
+  v2:
+    enabled: true
+    selection: {enabled: true}
   topic_bank_file: "topics.v2.yaml"
   rotation:
     monday: ["International & Géopolitique", "Économie", "Sciences & Curiosités"]

@@ -171,10 +171,13 @@ def _evergreen(config: dict, category: str, date: dt.date) -> Material | None:
 
 
 def fallback_categories(config: dict, primary: list[str]) -> list[str]:
-    """Ordre de repli explicite, limité aux rubriques ayant au moins un flux."""
+    """Ordre de repli explicite, avec la banque intemporelle en V2."""
     configured = setting(config, "editorial.fallback", []) or []
     available = {feed.get("category") for feed in setting(config, "news.feeds", []) or []
                  if isinstance(feed, dict)}
+    if setting(config, "editorial.v2.enabled", False):
+        from .timeless import TIMELESS
+        available.update(TIMELESS)
     return [category for category in dict.fromkeys(configured)
             if category in available and category not in primary]
 

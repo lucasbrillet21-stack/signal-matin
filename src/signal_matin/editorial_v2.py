@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import os
 import re
@@ -9,13 +10,15 @@ import urllib.error
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from pydantic import BaseModel, Field, ValidationError
+
 from .api_cost import UsageCounter, capture_usage, estimate
 from .config import setting
 from .connectors.tavily import SearchTrace, TavilyError, capture_search, search as tavily_search
 from .models import ApiCost, FeatureArticle, NewsItem, RubricDiagnostic
 from .source_material import Material, article_material
-from .synthesis import ComposeTrace, EditorialCritique, capture_compose, compose_feature, critique_feature
-from .timeless import TIMELESS, remember_published, topic_for_date
+from .synthesis import ComposeTrace, EditorialCritique, _chat, capture_compose, compose_feature, critique_feature
+from .timeless import TIMELESS, remember_published, topics_for_date
 from .usage_ledger import MonthlyCreditLedger
 from . import editorial as base
 
@@ -186,6 +189,119 @@ def _failure_streak(category: str, reason: str, previous: str, count: int) -> tu
     return reason, count, stop
 
 
+class CandidateAssessment(BaseModel):
+    id: str
+    recommend: bool
+    interest: float = Field(ge=0, le=1)
+    depth: float = Field(ge=0, le=1)
+    documentability: float = Field(ge=0, le=1)
+    angle: str
+    gap: str
+    search_queries: list[str]
+
+
+class CandidateSelection(BaseModel):
+    candidates: list[CandidateAssessment]
+
+
+def _candidate_pool(category: str, items: list[NewsItem], date: dt.date,
+                    config: dict, used_urls: set[str]) -> list[NewsItem]:
+    if category in TIMELESS:
+        return topics_for_date(config, category, date)[:8]
+    candidates = [item for item in items if item.category == category and
+                  base._canonical_url(item) not in used_urls]
+    if category == "International & Géopolitique":
+        candidates = [item for item in candidates if base._international_priority(item) is not None]
+    keywords = [str(word).casefold() for word in
+                (setting(config, "interests.music_keywords", []) or [])]
+    def score(item: NewsItem) -> float:
+        corroboration = len({base._publisher_key(str(other.source.url or ""))
+                             for other in candidates if other is not item and
+                             base._publisher_key(str(other.source.url or "")) !=
+                             base._publisher_key(str(item.source.url or "")) and
+                             (base._related(item, other) or base._same_story_semantic(item, other))})
+        interest = (category == "Musique" and any(
+            word in f"{item.title} {item.summary}".casefold() for word in keywords))
+        priority = (base._international_priority(item) or 0) if category == "International & Géopolitique" else 0
+        freshness = (max(0, 2 - abs((date - item.source.published_at.date()).days)) / 2
+                     if item.source.published_at else 0)
+        return (5 * priority + 4 * corroboration + 2 * interest + freshness +
+                min(len(item.expanded_summary or item.summary), 2000) / 2000)
+    return sorted(candidates, key=score, reverse=True)[:8]
+
+
+def _selection_available(config: dict) -> bool:
+    return (bool(setting(config, "editorial.v2.selection.enabled", True)) and
+            urlsplit(os.environ.get("SIGNAL_MATIN_LLM_URL", "")).hostname == "api.openai.com" and
+            os.environ.get("SIGNAL_MATIN_LLM_MODEL", "").startswith("gpt-4.1-mini"))
+
+
+def _select_candidates(pools: dict[str, list[NewsItem]]) -> tuple[dict[str, list[NewsItem]],
+                                                                  dict[int, list[tuple[str, str]]]]:
+    indexed = {f"{category}:{index}": item for category, candidates in pools.items()
+               for index, item in enumerate(candidates)}
+    if not indexed:
+        return pools, {}
+    cards = [{"id": identifier, "category": item.category, "title": item.title,
+              "summary": (item.expanded_summary or item.summary)[:700],
+              "available_chars": len(item.expanded_summary or item.summary),
+              "publisher": item.source.name, "url": str(item.source.url or ""),
+              "date": item.source.published_at.isoformat() if item.source.published_at else "",
+              "related_sources": [{"title": other.title, "publisher": other.source.name,
+                                   "summary": (other.expanded_summary or other.summary)[:300]}
+                                  for other in pools[item.category] if other is not item and
+                                  (base._related(item, other) or
+                                   base._same_story_semantic(item, other))][:2]}
+             for identifier, item in indexed.items()]
+    fields = {"id": {"type": "string"}, "recommend": {"type": "boolean"},
+              "interest": {"type": "number"},
+              "depth": {"type": "number"}, "documentability": {"type": "number"},
+              "angle": {"type": "string"}, "gap": {"type": "string"},
+              "search_queries": {"type": "array", "items": {"type": "string"}}}
+    schema = {"type": "json_schema", "json_schema": {
+        "name": "signal_matin_subject_selection", "strict": True,
+        "schema": {"type": "object", "properties": {"candidates": {"type": "array", "items": {
+            "type": "object", "properties": fields, "required": list(fields),
+            "additionalProperties": False}}}, "required": ["candidates"],
+            "additionalProperties": False}}}
+    raw = _chat([
+        {"role": "system", "content": (
+            "Tu sélectionnes les sujets d'un journal français. Évalue uniquement les fiches fournies ; "
+            "elles ne prouvent pas que le dossier documentaire est suffisant. Pour CHAQUE identifiant, "
+            "rends une évaluation unique. interest mesure l'intérêt pour le lecteur, depth la matière "
+            "possible pour un article de fond, documentability la chance de trouver des sources "
+            "indépendantes. Donne un angle précis, une lacune documentaire et au plus deux requêtes "
+            "ciblées pour la combler. recommend vaut faux si le sujet est trop étroit, peu intéressant, "
+            "redondant ou manifestement peu documentable ; dans ce cas, ne propose aucune requête. "
+            "Une fiche RSS courte n'est pas à elle seule une raison de rejet : juge le potentiel "
+            "documentaire, puis indique la preuve qu'il faudrait chercher. "
+            "Favorise la diversité des sujets et évite les doublons. "
+            "N'invente aucun fait. Réponds uniquement en JSON.")},
+        {"role": "user", "content": json.dumps(cards, ensure_ascii=False)},
+    ], response_format=schema)
+    selection = CandidateSelection.model_validate_json(raw)
+    if (len(selection.candidates) != len(indexed) or
+            {entry.id for entry in selection.candidates} != set(indexed)):
+        raise ValueError("sélection incomplète ou identifiants inconnus")
+    ranked: dict[str, list[NewsItem]] = {category: [] for category in pools}
+    queries: dict[int, list[tuple[str, str]]] = {}
+    for entry in sorted(selection.candidates,
+                        key=lambda choice: (choice.interest + choice.depth +
+                                            choice.documentability), reverse=True):
+        item = indexed[entry.id]
+        if not entry.recommend:
+            logger.info("[Selection] sujet écarté : %s | raison=%s",
+                        base._safe_log(item.title), base._safe_log(entry.gap, 120))
+            continue
+        ranked[item.category].append(item)
+        queries[id(item)] = [(query.strip()[:240], entry.gap.strip()[:120] or "lacune documentaire")
+                             for query in entry.search_queries[:2] if query.strip()]
+        logger.info("[Selection] %s | intérêt=%.2f | profondeur=%.2f | documentabilité=%.2f | angle=%s",
+                    base._safe_log(item.title), entry.interest, entry.depth,
+                    entry.documentability, base._safe_log(entry.angle, 120))
+    return ranked, queries
+
+
 def _research(first: NewsItem, materials: list[Material], config: dict,
               budget: ResearchBudget, row: RubricDiagnostic, cache: dict[str, Material],
               tier: str, phase: str, queries: list[tuple[str, str]], maximum: int,
@@ -196,9 +312,9 @@ def _research(first: NewsItem, materials: list[Material], config: dict,
         return outcome
     seen_queries = seen_queries if seen_queries is not None else set()
     attempts = 0
-    stagnant = 0
     gaps = {reason for _, reason in queries}
     addressed: set[str] = set()
+    failed_gaps: set[str] = set()
     for query, reason in queries:
         if attempts >= maximum:
             outcome.stop_reason = "phase_limit"
@@ -208,6 +324,8 @@ def _research(first: NewsItem, materials: list[Material], config: dict,
                 (len(materials) >= 10 and base._rich_enough(materials, tier, config))):
             outcome.stop_reason = "documentary_goal_reached"
             break
+        if phase == "post-critique" and reason in failed_gaps:
+            continue
         normalized = " ".join(query.casefold().split())
         if normalized in seen_queries:
             continue
@@ -258,25 +376,21 @@ def _research(first: NewsItem, materials: list[Material], config: dict,
         useful = gained_chars >= 150 and (gained_sources > 0 or gained_domains > 0 or gained_angles > 0)
         outcome.retained += gained_sources
         outcome.gain_chars += gained_chars
-        stagnant = 0 if useful else stagnant + 1
         logger.info("[Research] après=%d caractères | domaines=%d | types=%s | couverture=%s",
                     base._document_chars(materials), base._independent_sources(materials),
                     ",".join(sorted({_source_type(m) for m in materials})),
                     ",".join(sorted(_coverage(materials))))
-        logger.info("[Research] gain : sources=%d | domaines=%d | caractères=%d | angles=%d | utile=%s | série sans gain=%d",
+        logger.info("[Research] gain : sources=%d | domaines=%d | caractères=%d | angles=%d | utile=%s",
                     gained_sources, gained_domains, gained_chars, gained_angles,
-                    "OUI" if useful else "NON", stagnant)
+                    "OUI" if useful else "NON")
         if phase == "post-critique" and useful:
             addressed.add(reason)
             if addressed >= gaps:
                 outcome.stop_reason = "critic_gaps_addressed"
                 logger.info("[Research] arrêt post-critique : lacune(s) couvertes par de nouvelles sources")
                 break
-        limit_stall = 2 if phase == "post-critique" else 3
-        if stagnant >= limit_stall:
-            outcome.stop_reason = "no_documentary_gain"
-            logger.info("[Research] arrêt : %d recherches successives sans gain documentaire", stagnant)
-            break
+        elif phase == "post-critique":
+            failed_gaps.add(reason)
     return outcome
 
 
@@ -291,6 +405,21 @@ def write_features_v2(config: dict, date: dt.date, selected: list[str], items: l
     primary = primary if primary is not None else selected
     used_urls: set[str] = set()
     with capture_usage(counter):
+        pools: dict[str, list[NewsItem]] = {}
+        chosen_queries: dict[int, list[tuple[str, str]]] = {}
+        if _selection_available(config):
+            for category in selected:
+                if load_category and category not in primary and category not in TIMELESS:
+                    items.extend(load_category(category))
+                candidate_limit = 6 if category in primary else 4
+                pools[category] = _candidate_pool(category, items, date, config, used_urls)[:candidate_limit]
+            if any(pools.values()):
+                llm_attempts += 1
+                try:
+                    pools, chosen_queries = _select_candidates(pools)
+                except (OSError, ValueError, KeyError, TypeError, ValidationError) as error:
+                    logger.warning("[Selection] échec du classement, ordre local conservé : %s",
+                                   type(error).__name__)
         for category in selected:
             if len(features) >= 3:
                 break
@@ -298,37 +427,19 @@ def write_features_v2(config: dict, date: dt.date, selected: list[str], items: l
             rows.append(row)
             previous_failure = ""
             failure_count = 0
-            if load_category and category not in primary and category not in TIMELESS:
+            if not pools and load_category and category not in primary and category not in TIMELESS:
                 items.extend(load_category(category))
-            if category in TIMELESS:
-                topic = topic_for_date(config, category, date)
-                candidates = [topic] if topic else []
-            else:
-                candidates = [item for item in items if item.category == category and
-                              base._canonical_url(item) not in used_urls]
-                if category == "International & Géopolitique":
-                    eligible = []
-                    for item in candidates:
-                        if base._international_priority(item) is None:
-                            logger.info("[%s] candidat écarté avant recherche : category_mismatch | %s",
-                                        category, base._safe_log(item.title))
-                        else:
-                            eligible.append(item)
-                    candidates = eligible
-                keywords = [str(word).casefold() for word in
-                            (setting(config, "interests.music_keywords", []) or [])]
-                def score(item: NewsItem) -> float:
-                    corroboration = len({other.source.name for other in candidates
-                                         if other is not item and
-                                         (base._related(item, other) or base._same_story_semantic(item, other))})
-                    interest = (category == "Musique" and any(
-                        word in f"{item.title} {item.summary}".casefold() for word in keywords))
-                    category_priority = (base._international_priority(item) or 0) if category == "International & Géopolitique" else 0
-                    return (5 * category_priority + 2 * corroboration + 2 * interest +
-                            min(len(item.expanded_summary or item.summary), 4000) / 1000)
-                candidates.sort(key=score, reverse=True)
+            candidates = pools.get(category) if pools else None
+            if candidates is None:
+                candidates = _candidate_pool(category, items, date, config, used_urls)
+                if category in TIMELESS:
+                    candidates = candidates[:1]
+            if not candidates and pools:
+                row.reason = "editorial_selection_rejected"
             for first in candidates[:4]:
                 if not first:
+                    continue
+                if category not in TIMELESS and base._canonical_url(first) in used_urls:
                     continue
                 row.candidates_tried += 1
                 if category in TIMELESS:
@@ -352,10 +463,13 @@ def write_features_v2(config: dict, date: dt.date, selected: list[str], items: l
                 seen_queries: set[str] = set()
                 outcome = ResearchOutcome(stop_reason="initial_documentation_sufficient")
                 if not base._rich_enough(materials, base.TIERS[len(features)], config):
+                    research_queries = chosen_queries.get(id(first)) or _angles(first)[:2]
                     outcome = _research(first, materials, config, budget, row, cache, base.TIERS[len(features)],
-                                        "pre-draft", _angles(first),
+                                        "pre-draft", research_queries,
                                         min(10, int(setting(config, "tavily.max_pre_draft_searches", 10))),
-                                        int(setting(config, "tavily.pre_draft_target_searches", 3)), seen_queries)
+                                        (1 if chosen_queries.get(id(first)) else
+                                         min(len(research_queries), int(setting(
+                                             config, "tavily.pre_draft_target_searches", 3)))), seen_queries)
                 base._record_material(row, materials)
                 tier = base.TIERS[len(features)]
                 if not base._rich_enough(materials, tier, config):
@@ -365,9 +479,7 @@ def write_features_v2(config: dict, date: dt.date, selected: list[str], items: l
                                   "no_results_retained" if outcome.searches and outcome.retained == 0 else
                                   "moins_de_900_caractères" if row.material_chars < 900 else
                                   "objectif_richesse_non_atteint")
-                    previous_failure, failure_count, stop = _failure_streak(
-                        category, row.reason, previous_failure, failure_count)
-                    if stop or row.reason in {"edition_or_category_budget", "monthly_credit_budget"}:
+                    if row.reason in {"edition_or_category_budget", "monthly_credit_budget"}:
                         break
                     continue
                 active_trace: ComposeTrace | None = None
